@@ -1,6 +1,6 @@
 [versions]
 kotlin = "2.1.21"
-androidGradlePlugin = "8.9.3"
+androidGradlePlugin = "8.13.0"
 
 # AndroidX
 androidxAppCompat = "1.7.1"
