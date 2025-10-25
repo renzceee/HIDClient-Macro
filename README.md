@@ -4,6 +4,8 @@ Use your Android phone as a USB HID keyboard and macro pad. Works anywhere a rea
 
 This project adds first‑class macro support (Ducky Script–style) on top of the core HID client functionality.
 
+Based on and originally derived from [Arian04/android-hid-client](https://github.com/Arian04/android-hid-client); this fork focuses on macro functionality.
+
 
 ## Features
 
@@ -124,5 +126,5 @@ This project is licensed under the GNU GPLv3. See the `LICENSE` file for details
 
 ## Credits
 
-- Based on the excellent work behind USB HID client implementations on Android. Original inspiration and foundations from Arian04’s android‑hid‑client project.
+- Based on the excellent work behind USB HID client implementations on Android. Original inspiration and foundations from [Arian04/android-hid-client](https://github.com/Arian04/android-hid-client).
 
