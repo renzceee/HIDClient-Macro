@@ -1,6 +1,6 @@
 # HIDClient‑Macro
 
-Use your Android phone as a USB HID keyboard, mouse, and macro pad. Works anywhere a real keyboard/mouse does — including BIOS/UEFI — because it speaks the USB HID protocol directly.
+Use your Android phone as a USB HID keyboard and macro pad. Works anywhere a real keyboard does — including BIOS/UEFI — because it speaks the USB HID protocol directly.
 
 This project adds first‑class macro support (Ducky Script–style) on top of the core HID client functionality.
 
@@ -8,7 +8,6 @@ This project adds first‑class macro support (Ducky Script–style) on top of t
 ## Features
 
 - **Keyboard**: Type in real‑time from any Android soft keyboard.
-- **Mouse/Touchpad**: Control pointer, click, and scroll.
 - **Manual input**: Type a string and send it in one go.
 - **Macros**: Create, edit, and run Ducky Script–style macros with syntax highlighting, presets, delays, and repeats.
 - **Media and special keys**: Send common modifiers and media/navigation keys.
@@ -29,7 +28,7 @@ Notes:
 
 ## How it works
 
-The app augments Android’s default USB gadget to expose HID functions and provides a UI to send HID reports. Internally it creates character devices (for example, `/dev/hidg0`, `/dev/hidg1`) and writes keyboard/mouse reports to them. Because this happens at the USB gadget level, the connected host sees a normal keyboard/mouse and requires no software.
+The app augments Android’s default USB gadget to expose HID functions and provides a UI to send HID reports. Internally it creates character devices (for example, `/dev/hidg0`, `/dev/hidg1`) and writes keyboard reports to them. Because this happens at the USB gadget level, the connected host sees a normal keyboard and requires no software.
 
 
 ## Installation
@@ -54,7 +53,6 @@ The app augments Android’s default USB gadget to expose HID functions and prov
 3. Start the service if required by your device/ROM.
 4. For real‑time typing, tap the keyboard icon to open your soft keyboard and begin typing.
 5. To send a prepared string, use the Manual Input field and press Send.
-6. To control the pointer, open the touchpad/mouse view.
 
 ### Macros
 
@@ -83,7 +81,7 @@ REPEAT 3
 
 ## Troubleshooting
 
-- **Host doesn’t detect a keyboard/mouse**
+- **Host doesn’t detect a keyboard**
   - Use a known‑good OTG cable and port. Try another cable/port if possible.
   - Ensure root was granted and SELinux policy was patched successfully (Magisk/KernelSU).
   - Reconnect the USB cable after starting the service.
@@ -100,7 +98,7 @@ If issues persist, capture logs and open an issue with device model, Android ver
 
 ## Roadmap
 
-- Keyboard and mouse/touchpad support
+- Keyboard support
 - Macro editor with Ducky Script–style syntax
 - Manual input sender
 - Settings and safety prompts
