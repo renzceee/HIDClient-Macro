@@ -4,6 +4,7 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -18,11 +19,32 @@ import me.arianb.usb_hid_client.hid_utils.ModifiesStateDirectly
 import me.arianb.usb_hid_client.hid_utils.KeyCodeTranslation
 import me.arianb.usb_hid_client.report_senders.KeySender
 import me.arianb.usb_hid_client.settings.GadgetUserPreferences
+import me.arianb.usb_hid_client.settings.Macro
 import me.arianb.usb_hid_client.settings.UserPreferencesRepository
 import me.arianb.usb_hid_client.shell_utils.RootStateHolder
 import timber.log.Timber
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import androidx.core.content.ContextCompat
 import java.io.FileNotFoundException
 import java.io.IOException
+
+enum class MacroLogType {
+    INFO,
+    COMMAND,
+    TYPING,
+    DELAY,
+    SUCCESS,
+    ERROR
+}
+
+data class MacroLogEntry(
+    val timestamp: String,
+    val message: String,
+    val type: MacroLogType = MacroLogType.INFO
+)
 
 /**
  * Data class that represents the UI state
@@ -31,6 +53,7 @@ data class MyUiState(
     // Character Device Stuff
     val missingCharacterDevice: Boolean = false,
     val isCharacterDevicePermissionsBroken: String? = null,
+    val isCharacterDeviceUpdating: Boolean = false,
 
     // Other Stuff
     val isDeviceUnplugged: Boolean = false
@@ -56,7 +79,113 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
 
+    private val _runningMacroId = MutableStateFlow<String?>(null)
+    val runningMacroId: StateFlow<String?> = _runningMacroId
+
+    data class AutoRunStatus(
+        val currentIndex: Int,
+        val totalCount: Int,
+        val currentMacroName: String
+    )
+
+    private val _autoRunStatus = MutableStateFlow<AutoRunStatus?>(null)
+    val autoRunStatus: StateFlow<AutoRunStatus?> = _autoRunStatus
+
+    private val _isAppInForeground = MutableStateFlow(true)
+    val isAppInForeground: StateFlow<Boolean> = _isAppInForeground
+
+    private val _macroLogs = MutableStateFlow<List<MacroLogEntry>>(emptyList())
+    val macroLogs: StateFlow<List<MacroLogEntry>> = _macroLogs.asStateFlow()
+
+    fun clearLogs() {
+        _macroLogs.value = emptyList()
+    }
+
+    fun appendLog(message: String, type: MacroLogType = MacroLogType.INFO) {
+        val timeStr = java.text.SimpleDateFormat("[HH:mm:ss]", java.util.Locale.getDefault()).format(java.util.Date())
+        val newEntry = MacroLogEntry(timestamp = timeStr, message = message, type = type)
+        _macroLogs.update { it + newEntry }
+    }
+
+    private var hasAutoRunExecutedForCurrentConnection = true
+    private var isUsbConnectedState = false
+
+    fun setAppForegroundState(isForeground: Boolean) {
+        _isAppInForeground.value = isForeground
+        if (!isForeground) {
+            stopMacro()
+        } else {
+            checkAndTriggerAutoRunOnConnect()
+        }
+    }
+
+    private fun onUsbConnected() {
+        _uiState.update { it.copy(isDeviceUnplugged = false) }
+        if (!isUsbConnectedState) {
+            isUsbConnectedState = true
+            hasAutoRunExecutedForCurrentConnection = false
+            viewModelScope.launch {
+                delay(1000L)
+                checkAndTriggerAutoRunOnConnect()
+            }
+        }
+    }
+
+    private fun onUsbDisconnected() {
+        isUsbConnectedState = false
+        hasAutoRunExecutedForCurrentConnection = false
+        _uiState.update { it.copy(isDeviceUnplugged = true) }
+    }
+
+    private val usbReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val action = intent?.action ?: return
+            Timber.d("UsbBroadcastReceiver received action: %s", action)
+            when (action) {
+                "android.hardware.usb.action.USB_STATE" -> {
+                    val connected = intent.getBooleanExtra("connected", false)
+                    val configured = intent.getBooleanExtra("configured", false)
+                    Timber.d("USB_STATE: connected=%b, configured=%b", connected, configured)
+                    if (connected || configured) {
+                        onUsbConnected()
+                    } else {
+                        onUsbDisconnected()
+                    }
+                }
+                Intent.ACTION_POWER_CONNECTED -> {
+                    Timber.d("ACTION_POWER_CONNECTED received")
+                    onUsbConnected()
+                }
+                Intent.ACTION_POWER_DISCONNECTED -> {
+                    Timber.d("ACTION_POWER_DISCONNECTED received")
+                    onUsbDisconnected()
+                }
+            }
+        }
+    }
+
     init {
+        val filter = IntentFilter().apply {
+            addAction("android.hardware.usb.action.USB_STATE")
+            addAction(Intent.ACTION_POWER_CONNECTED)
+            addAction(Intent.ACTION_POWER_DISCONNECTED)
+        }
+        val stickyIntent = ContextCompat.registerReceiver(
+            application,
+            usbReceiver,
+            filter,
+            ContextCompat.RECEIVER_EXPORTED
+        )
+        if (stickyIntent != null && stickyIntent.action == "android.hardware.usb.action.USB_STATE") {
+            val connected = stickyIntent.getBooleanExtra("connected", false)
+            val configured = stickyIntent.getBooleanExtra("configured", false)
+            if (connected || configured) {
+                _uiState.update { it.copy(isDeviceUnplugged = false) }
+                isUsbConnectedState = true
+                hasAutoRunExecutedForCurrentConnection = true
+            }
+        }
+
         senderFlowList.forEach { senderFlow ->
             viewModelScope.launch {
                 senderFlow.collectLatest { sender ->
@@ -80,12 +209,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    override fun onCleared() {
+        super.onCleared()
+        try {
+            getApplication<Application>().unregisterReceiver(usbReceiver)
+        } catch (e: Exception) {
+            Timber.e(e)
+        }
+    }
+
+
+
     private fun handleException(e: IOException, devicePath: DevicePath) {
         val exceptionString = e.message ?: Log.getStackTraceString(e)
         val lowercaseExceptionString = exceptionString.lowercase()
 
         if (lowercaseExceptionString.contains("errno 108")) {
             Timber.i("device might be unplugged")
+            hasAutoRunExecutedForCurrentConnection = false
             _uiState.update { it.copy(isDeviceUnplugged = true) }
         } else if (lowercaseExceptionString.contains("permission denied")) {
             Timber.i("char dev perms are wrong")
@@ -108,12 +249,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        viewModelScope.launch {
-            val gadgetUserPreferences = GadgetUserPreferences.fromUserPreferences(userPreferencesStateFlow.value)
-            characterDeviceManager.createCharacterDevices(gadgetUserPreferences)
+        _uiState.update { it.copy(missingCharacterDevice = false, isCharacterDeviceUpdating = true) }
 
-            // Re-evaluate state
-            anyCharacterDeviceMissing()
+        viewModelScope.launch {
+            try {
+                val gadgetUserPreferences = GadgetUserPreferences.fromUserPreferences(userPreferencesStateFlow.value)
+                characterDeviceManager.createCharacterDevices(gadgetUserPreferences)
+            } finally {
+                val missing = anyCharacterDeviceMissing()
+                _uiState.update { it.copy(missingCharacterDevice = missing, isCharacterDeviceUpdating = false) }
+            }
         }
     }
 
@@ -123,12 +268,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        viewModelScope.launch {
-            val gadgetUserPreferences = GadgetUserPreferences.fromUserPreferences(userPreferencesStateFlow.value)
-            characterDeviceManager.deleteCharacterDevices(gadgetUserPreferences)
+        _uiState.update { it.copy(missingCharacterDevice = true, isCharacterDeviceUpdating = true) }
 
-            // Re-evaluate state
-            anyCharacterDeviceMissing()
+        viewModelScope.launch {
+            try {
+                val gadgetUserPreferences = GadgetUserPreferences.fromUserPreferences(userPreferencesStateFlow.value)
+                characterDeviceManager.deleteCharacterDevices(gadgetUserPreferences)
+            } finally {
+                val missing = anyCharacterDeviceMissing()
+                _uiState.update { it.copy(missingCharacterDevice = missing, isCharacterDeviceUpdating = false) }
+            }
         }
     }
 
@@ -170,185 +319,272 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         crossinline transform: (value: T) -> R
     ) = mapState(viewModelScope, transform)
 
-    // Macro executor
-    fun executeMacro(script: String) {
-        if (_isPlaying.value) return
+
+
+    fun checkAndTriggerAutoRunOnConnect() {
+        if (_isAppInForeground.value && isUsbConnectedState && !hasAutoRunExecutedForCurrentConnection && !_isPlaying.value && !_uiState.value.missingCharacterDevice) {
+            val enabledMacros = userPreferencesStateFlow.value.macros
+                .filter { it.autoRunEnabled }
+                .sortedBy { it.autoRunOrder }
+            if (enabledMacros.isNotEmpty()) {
+                hasAutoRunExecutedForCurrentConnection = true
+                executeAutoRunSequence(enabledMacros)
+            }
+        }
+    }
+
+    fun executeAutoRunSequence(enabledMacros: List<Macro>) {
+        if (_isPlaying.value || _uiState.value.missingCharacterDevice || enabledMacros.isEmpty()) return
+        val sorted = enabledMacros.sortedBy { it.autoRunOrder }
         currentMacroJob = viewModelScope.launch {
             _isPlaying.value = true
             try {
-                val lines = script.lines()
-                var defaultDelayMs = 0L
-                var lastAction: (suspend () -> Unit)? = null
-
-                fun normalizeToken(t: String): String = when (t.lowercase()) {
-                    "windows", "win", "gui", "meta", "cmd", "super" -> "win"
-                    "control", "ctrl" -> "ctrl"
-                    "escape", "esc" -> "esc"
-                    "enter", "return" -> "enter"
-                    "tab" -> "tab"
-                    "space", "spacebar" -> "space"
-                    "backspace", "bksp" -> "backspace"
-                    "delete", "del" -> "delete"
-                    "up" -> "up"
-                    "down" -> "down"
-                    "left" -> "left"
-                    "right" -> "right"
-                    "pageup", "pgup" -> "pageup"
-                    "pagedown", "pgdn" -> "pagedown"
-                    "home" -> "home"
-                    "end" -> "end"
-                    else -> t.lowercase()
-                }
-
-                suspend fun runActionAndMaybeDelay(action: suspend () -> Unit) {
-                    if (!isActive) return
-                    action()
-                    if (defaultDelayMs > 0 && isActive) delay(defaultDelayMs)
-                }
-
-                for (rawLine in lines) {
+                for ((index, macro) in sorted.withIndex()) {
                     if (!isActive) break
-                    val line = rawLine.trim()
-                    if (line.isEmpty()) continue
-                    if (line.startsWith("REM", ignoreCase = true)) continue
-
-                    val parts = line.split("\u0020+".toRegex(), limit = 2)
-                    val cmd = parts[0].uppercase()
-                    val arg = if (parts.size > 1) parts[1] else ""
-
-                    when (cmd) {
-                        "DEFAULT_DELAY", "DEFAULTDELAY" -> {
-                            defaultDelayMs = arg.trim().toLongOrNull() ?: defaultDelayMs
-                        }
-                        "DELAY" -> {
-                            val ms = arg.trim().toLongOrNull() ?: 0L
-                            if (ms > 0) delay(ms)
-                        }
-                        "STRING" -> {
-                            val action: suspend () -> Unit = { sendText(arg) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        }
-                        "ENTER" -> {
-                            val action: suspend () -> Unit = { sendChord(listOf("enter")) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        }
-                        "TAB" -> {
-                            val action: suspend () -> Unit = { sendChord(listOf("tab")) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        }
-                        "ESC", "ESCAPE" -> {
-                            val action: suspend () -> Unit = { sendChord(listOf("esc")) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        }
-                        "SPACE" -> {
-                            val action: suspend () -> Unit = { sendChord(listOf("space")) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        }
-                        "BACKSPACE", "BKSP" -> {
-                            val action: suspend () -> Unit = { sendChord(listOf("backspace")) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        }
-                        "DELETE", "DEL" -> {
-                            val action: suspend () -> Unit = { sendChord(listOf("delete")) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        }
-                        "LEFT" -> {
-                            val action: suspend () -> Unit = { sendChord(listOf("left")) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        }
-                        "RIGHT" -> {
-                            val action: suspend () -> Unit = { sendChord(listOf("right")) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        }
-                        "UP" -> {
-                            val action: suspend () -> Unit = { sendChord(listOf("up")) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        }
-                        "DOWN" -> {
-                            val action: suspend () -> Unit = { sendChord(listOf("down")) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        }
-                        "HOME" -> {
-                            val action: suspend () -> Unit = { sendChord(listOf("home")) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        }
-                        "END" -> {
-                            val action: suspend () -> Unit = { sendChord(listOf("end")) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        }
-                        "PAGEUP", "PGUP" -> {
-                            val action: suspend () -> Unit = { sendChord(listOf("pageup")) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        }
-                        "PAGEDOWN", "PGDN" -> {
-                            val action: suspend () -> Unit = { sendChord(listOf("pagedown")) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        }
-                        "REPEAT" -> {
-                            val times = arg.trim().toIntOrNull() ?: 0
-                            repeat(times) {
-                                if (!isActive) return@repeat
-                                val a = lastAction
-                                if (a != null) runActionAndMaybeDelay(a)
-                            }
-                        }
-                        "GUI", "WINDOWS", "WIN", "CMD", "META", "SUPER",
-                        "CTRL", "CONTROL", "ALT", "SHIFT" -> {
-                            // Parse a chord: modifiers + optional key
-                            val words = line.split("\u0020+".toRegex()).map { normalizeToken(it) }
-                            val tokens = words
-                            val action: suspend () -> Unit = { sendChord(tokens) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        }
-                        else -> {
-                            // Fallback: allow lines like CTRL ALT DEL or plain text via STRING
-                            val words = line.split("\u0020+".toRegex()).map { normalizeToken(it) }
-                            val maybeHasModifier = words.any { it in listOf("ctrl", "alt", "shift", "win") }
-                            if (maybeHasModifier) {
-                                val action: suspend () -> Unit = { sendChord(words) }
-                                lastAction = action
-                                runActionAndMaybeDelay(action)
-                            } else {
-                                // If it's a single known key token (e.g., left, f5), send as key press
-                                val single = words.singleOrNull()
-                                val isFunctionKey = single?.matches(Regex("f(1[0-2]|[1-9])", RegexOption.IGNORE_CASE)) == true
-                                val knownKeys = setOf(
-                                    "enter","esc","tab","space","backspace","delete",
-                                    "up","down","left","right","home","end","pageup","pagedown",
-                                    "capslock","printscreen"
-                                )
-                                if (single != null && (single in knownKeys || isFunctionKey)) {
-                                    val action: suspend () -> Unit = { sendChord(listOf(single)) }
-                                    lastAction = action
-                                    runActionAndMaybeDelay(action)
-                                } else {
-                                    val action: suspend () -> Unit = { sendText(line) }
-                                    lastAction = action
-                                    runActionAndMaybeDelay(action)
-                                }
-                            }
-                        }
+                    _autoRunStatus.value = AutoRunStatus(
+                        currentIndex = index + 1,
+                        totalCount = sorted.size,
+                        currentMacroName = macro.name
+                    )
+                    _runningMacroId.value = macro.id
+                    runScriptInternal(macro.script)
+                    if (index < sorted.size - 1 && isActive) {
+                        delay(1000L)
                     }
                 }
             } finally {
                 _isPlaying.value = false
+                _autoRunStatus.value = null
+                _runningMacroId.value = null
                 currentMacroJob = null
+            }
+        }
+    }
+
+    fun executeMacro(macro: Macro) = executeMacro(macro.id, macro.script)
+
+    fun executeMacro(script: String) = executeMacro(null, script)
+
+    fun executeMacro(macroId: String?, script: String) {
+        if (_isPlaying.value || _uiState.value.missingCharacterDevice) return
+        currentMacroJob = viewModelScope.launch {
+            _isPlaying.value = true
+            _runningMacroId.value = macroId
+            clearLogs()
+            appendLog("Starting macro execution...", MacroLogType.INFO)
+            try {
+                runScriptInternal(script)
+                if (isActive) {
+                    appendLog("Macro execution finished successfully.", MacroLogType.SUCCESS)
+                } else {
+                    appendLog("Macro execution cancelled.", MacroLogType.ERROR)
+                }
+            } catch (e: Exception) {
+                appendLog("Macro execution failed: ${e.message}", MacroLogType.ERROR)
+            } finally {
+                _isPlaying.value = false
+                _runningMacroId.value = null
+                currentMacroJob = null
+            }
+        }
+    }
+
+    private suspend fun runScriptInternal(script: String) {
+        val lines = script.lines()
+        var defaultDelayMs = 0L
+        var lastAction: (suspend () -> Unit)? = null
+
+        fun normalizeToken(t: String): String = when (t.lowercase()) {
+            "windows", "win", "gui", "meta", "cmd", "super" -> "win"
+            "control", "ctrl" -> "ctrl"
+            "escape", "esc" -> "esc"
+            "enter", "return" -> "enter"
+            "tab" -> "tab"
+            "space", "spacebar" -> "space"
+            "backspace", "bksp" -> "backspace"
+            "delete", "del" -> "delete"
+            "up" -> "up"
+            "down" -> "down"
+            "left" -> "left"
+            "right" -> "right"
+            "pageup", "pgup" -> "pageup"
+            "pagedown", "pgdn" -> "pagedown"
+            "home" -> "home"
+            "end" -> "end"
+            else -> t.lowercase()
+        }
+
+        suspend fun runActionAndMaybeDelay(action: suspend () -> Unit) {
+            if (!kotlinx.coroutines.currentCoroutineContext().isActive) return
+            action()
+            if (defaultDelayMs > 0 && kotlinx.coroutines.currentCoroutineContext().isActive) delay(defaultDelayMs)
+        }
+
+        for (rawLine in lines) {
+            if (!kotlinx.coroutines.currentCoroutineContext().isActive) {
+                appendLog("Execution stopped by user", MacroLogType.ERROR)
+                break
+            }
+            val line = rawLine.trim()
+            if (line.isEmpty()) continue
+            if (line.startsWith("REM", ignoreCase = true)) {
+                appendLog("Comment: $line", MacroLogType.INFO)
+                continue
+            }
+
+            val parts = line.split("\u0020+".toRegex(), limit = 2)
+            val cmd = parts[0].uppercase()
+            val arg = if (parts.size > 1) parts[1] else ""
+
+            when (cmd) {
+                "DEFAULT_DELAY", "DEFAULTDELAY" -> {
+                    defaultDelayMs = arg.trim().toLongOrNull() ?: defaultDelayMs
+                    appendLog("Set DEFAULT_DELAY ${defaultDelayMs}ms", MacroLogType.COMMAND)
+                }
+                "DELAY" -> {
+                    val ms = arg.trim().toLongOrNull() ?: 0L
+                    if (ms > 0) {
+                        appendLog("Delaying ${ms}ms...", MacroLogType.DELAY)
+                        delay(ms)
+                    }
+                }
+                "STRING" -> {
+                    appendLog("Typing string: \"$arg\"", MacroLogType.TYPING)
+                    val action: suspend () -> Unit = { sendText(arg) }
+                    lastAction = action
+                    runActionAndMaybeDelay(action)
+                }
+                "ENTER" -> {
+                    appendLog("Key press: ENTER", MacroLogType.COMMAND)
+                    val action: suspend () -> Unit = { sendChord(listOf("enter")) }
+                    lastAction = action
+                    runActionAndMaybeDelay(action)
+                }
+                "TAB" -> {
+                    appendLog("Key press: TAB", MacroLogType.COMMAND)
+                    val action: suspend () -> Unit = { sendChord(listOf("tab")) }
+                    lastAction = action
+                    runActionAndMaybeDelay(action)
+                }
+                "ESC", "ESCAPE" -> {
+                    appendLog("Key press: ESC", MacroLogType.COMMAND)
+                    val action: suspend () -> Unit = { sendChord(listOf("esc")) }
+                    lastAction = action
+                    runActionAndMaybeDelay(action)
+                }
+                "SPACE" -> {
+                    appendLog("Key press: SPACE", MacroLogType.COMMAND)
+                    val action: suspend () -> Unit = { sendChord(listOf("space")) }
+                    lastAction = action
+                    runActionAndMaybeDelay(action)
+                }
+                "BACKSPACE", "BKSP" -> {
+                    appendLog("Key press: BACKSPACE", MacroLogType.COMMAND)
+                    val action: suspend () -> Unit = { sendChord(listOf("backspace")) }
+                    lastAction = action
+                    runActionAndMaybeDelay(action)
+                }
+                "DELETE", "DEL" -> {
+                    appendLog("Key press: DELETE", MacroLogType.COMMAND)
+                    val action: suspend () -> Unit = { sendChord(listOf("delete")) }
+                    lastAction = action
+                    runActionAndMaybeDelay(action)
+                }
+                "LEFT" -> {
+                    appendLog("Key press: LEFT", MacroLogType.COMMAND)
+                    val action: suspend () -> Unit = { sendChord(listOf("left")) }
+                    lastAction = action
+                    runActionAndMaybeDelay(action)
+                }
+                "RIGHT" -> {
+                    appendLog("Key press: RIGHT", MacroLogType.COMMAND)
+                    val action: suspend () -> Unit = { sendChord(listOf("right")) }
+                    lastAction = action
+                    runActionAndMaybeDelay(action)
+                }
+                "UP" -> {
+                    appendLog("Key press: UP", MacroLogType.COMMAND)
+                    val action: suspend () -> Unit = { sendChord(listOf("up")) }
+                    lastAction = action
+                    runActionAndMaybeDelay(action)
+                }
+                "DOWN" -> {
+                    appendLog("Key press: DOWN", MacroLogType.COMMAND)
+                    val action: suspend () -> Unit = { sendChord(listOf("down")) }
+                    lastAction = action
+                    runActionAndMaybeDelay(action)
+                }
+                "HOME" -> {
+                    appendLog("Key press: HOME", MacroLogType.COMMAND)
+                    val action: suspend () -> Unit = { sendChord(listOf("home")) }
+                    lastAction = action
+                    runActionAndMaybeDelay(action)
+                }
+                "END" -> {
+                    appendLog("Key press: END", MacroLogType.COMMAND)
+                    val action: suspend () -> Unit = { sendChord(listOf("end")) }
+                    lastAction = action
+                    runActionAndMaybeDelay(action)
+                }
+                "PAGEUP", "PGUP" -> {
+                    appendLog("Key press: PAGEUP", MacroLogType.COMMAND)
+                    val action: suspend () -> Unit = { sendChord(listOf("pageup")) }
+                    lastAction = action
+                    runActionAndMaybeDelay(action)
+                }
+                "PAGEDOWN", "PGDN" -> {
+                    appendLog("Key press: PAGEDOWN", MacroLogType.COMMAND)
+                    val action: suspend () -> Unit = { sendChord(listOf("pagedown")) }
+                    lastAction = action
+                    runActionAndMaybeDelay(action)
+                }
+                "REPEAT" -> {
+                    val times = arg.trim().toIntOrNull() ?: 0
+                    appendLog("REPEAT last command ($times times)", MacroLogType.COMMAND)
+                    repeat(times) {
+                        if (!kotlinx.coroutines.currentCoroutineContext().isActive) return@repeat
+                        val a = lastAction
+                        if (a != null) runActionAndMaybeDelay(a)
+                    }
+                }
+                "GUI", "WINDOWS", "WIN", "CMD", "META", "SUPER",
+                "CTRL", "CONTROL", "ALT", "SHIFT" -> {
+                    val words = line.split("\u0020+".toRegex()).map { normalizeToken(it) }
+                    val tokens = words
+                    appendLog("Key chord: ${tokens.joinToString(" + ")}", MacroLogType.COMMAND)
+                    val action: suspend () -> Unit = { sendChord(tokens) }
+                    lastAction = action
+                    runActionAndMaybeDelay(action)
+                }
+                else -> {
+                    val words = line.split("\u0020+".toRegex()).map { normalizeToken(it) }
+                    val maybeHasModifier = words.any { it in listOf("ctrl", "alt", "shift", "win") }
+                    if (maybeHasModifier) {
+                        appendLog("Key chord: ${words.joinToString(" + ")}", MacroLogType.COMMAND)
+                        val action: suspend () -> Unit = { sendChord(words) }
+                        lastAction = action
+                        runActionAndMaybeDelay(action)
+                    } else {
+                        val single = words.singleOrNull()
+                        val isFunctionKey = single?.matches(Regex("f(1[0-2]|[1-9])", RegexOption.IGNORE_CASE)) == true
+                        val knownKeys = setOf(
+                            "enter","esc","tab","space","backspace","delete",
+                            "up","down","left","right","home","end","pageup","pagedown",
+                            "capslock","printscreen"
+                        )
+                        if (single != null && (single in knownKeys || isFunctionKey)) {
+                            appendLog("Key press: ${single.uppercase()}", MacroLogType.COMMAND)
+                            val action: suspend () -> Unit = { sendChord(listOf(single)) }
+                            lastAction = action
+                            runActionAndMaybeDelay(action)
+                        } else {
+                            appendLog("Typing text: \"$line\"", MacroLogType.TYPING)
+                            val action: suspend () -> Unit = { sendText(line) }
+                            lastAction = action
+                            runActionAndMaybeDelay(action)
+                        }
+                    }
+                }
             }
         }
     }

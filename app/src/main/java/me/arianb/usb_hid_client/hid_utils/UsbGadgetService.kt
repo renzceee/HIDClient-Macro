@@ -164,7 +164,7 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
             "hid.keyboard",
             protocol = 1u,
             subclass = 1u,
-            reportLength = 4u,
+            reportLength = 8u,
             // @formatter:off
             reportDescriptor = ubyteArrayOf(0x05u,0x01u,0x09u,0x06u,0xA1u,0x01u,0x85u,0x01u,0x75u,0x01u,0x95u,0x08u,0x05u,0x07u,0x19u,0xE0u,0x29u,0xE7u,0x15u,0x00u,0x25u,0x01u,0x81u,0x02u,0x75u,0x01u,0x95u,0x08u,0x81u,0x03u,0x95u,0x02u,0x75u,0x08u,0x15u,0x00u,0x25u,0xFFu,0x05u,0x07u,0x19u,0x00u,0x29u,0xFFu,0x81u,0x00u,0xC0u,0x05u,0x0Cu,0x09u,0x01u,0xA1u,0x01u,0x85u,0x02u,0x75u,0x10u,0x95u,0x01u,0x26u,0xFFu,0x07u,0x19u,0x00u,0x2Au,0xFFu,0x07u,0x81u,0x00u,0xC0u)
             // @formatter:on
@@ -333,11 +333,17 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
 
         functions.forEach {
             try {
+                // Delete stale symlink or file if it exists prior to creating the new symlink
+                if (it.configPath.exists() || it.configPath.isSymbolicLink()) {
+                    it.configPath.deleteIfExists()
+                }
                 it.configPath.createSymbolicLinkPointingTo(it.functionPath)
             } catch (e: java.nio.file.FileAlreadyExistsException) {
                 // NOTE: it's extremely important to make sure you catch Java's FileAlreadyExistsException, not Kotlin's
                 Timber.w("Attempted to create a symlink in a location that already had a file")
                 Timber.d(e)
+            } catch (e: Exception) {
+                Timber.e("Failed to link function ${it.name} to config: $e")
             }
         }
     }
@@ -376,10 +382,20 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
 
     @OptIn(ExperimentalPathApi::class)
     fun deleteCharacterDevices() {
+        // Disable gadget FIRST before trying to delete functions from ConfigFS
+        try {
+            disableGadget()
+        } catch (e: IOException) {
+            Timber.e("Failed to disable usb gadget before deleting character devices")
+            Timber.e(e)
+        }
+
         for (hidFunction in allHidFunctions) {
             try {
                 // Clear out function configuration directory (should just point to function path)
-                hidFunction.configPath.deleteRecursively()
+                if (hidFunction.configPath.exists() || hidFunction.configPath.isSymbolicLink()) {
+                    hidFunction.configPath.deleteRecursively()
+                }
 
                 // Delete function directories
                 hidFunction.functionPath.deleteIfExists()
@@ -387,14 +403,11 @@ internal class UsbGadgetManager(val gadgetUserPreferences: GadgetUserPreferences
                 Timber.e("Failed to remove '${hidFunction.name}' function from usb gadget")
                 Timber.e(e)
             }
+        }
 
-            // Apply changes
-            resetGadget()
-
-            // Delete character devices
-            CharacterDeviceManager.Companion.DevicePaths.all.map { Path(it.path) }.forEach {
-                it.deleteIfExists()
-            }
+        // Delete character devices
+        CharacterDeviceManager.Companion.DevicePaths.all.map { Path(it.path) }.forEach {
+            it.deleteIfExists()
         }
     }
 

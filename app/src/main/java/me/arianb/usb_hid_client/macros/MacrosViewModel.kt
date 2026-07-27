@@ -17,7 +17,20 @@ class MacrosViewModel(application: Application) : AndroidViewModel(application) 
         .map { it.macros }
         .stateIn(viewModelScope, SharingStarted.Eagerly, repo.getMacros())
 
+    fun toggleAutoRun(id: String) = repo.toggleMacroAutoRun(id)
     fun addOrUpdateMacro(macro: Macro) = repo.addOrUpdateMacro(macro)
     fun deleteMacro(id: String) = repo.deleteMacro(id)
+    fun deleteMacros(ids: Set<String>) = repo.deleteMacros(ids)
     fun getMacroById(id: String): Macro? = repo.getMacros().find { it.id == id }
+
+    fun exportSelectedMacros(selectedIds: Set<String>): String = repo.exportMacrosJson(selectedIds)
+
+    fun importMacros(jsonContent: String): Result<Int> {
+        return try {
+            val count = repo.importMacros(jsonContent)
+            Result.success(count)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 }

@@ -68,30 +68,38 @@ class CharacterDeviceManager private constructor(private val application: Applic
         withContext(Dispatchers.IO) {
             fixSelinuxPermissions()
 
-            launch {
-                for (devicePath in DevicePaths.all) {
-                    try {
-                        withTimeout(3000) {
-                            // wait until the device file exists before trying to fix its permissions
-                            while (!devicePath.exists()) {
-                                Timber.d("$devicePath doesn't exist yet, sleeping for a bit before trying again...")
-                                delay(200)
-                            }
-                            Timber.d("$devicePath exists now!!!")
+            for (devicePath in DevicePaths.all) {
+                try {
+                    withTimeout(3000) {
+                        // wait until the device file exists before trying to fix its permissions
+                        while (!devicePath.exists()) {
+                            Timber.d("$devicePath doesn't exist yet, sleeping for a bit before trying again...")
+                            delay(50)
                         }
-                        fixCharacterDevicePermissions(devicePath)
-                    } catch (e: TimeoutCancellationException) {
-                        // FIXME: show this error to the user
-                        Timber.e("Timed out while waiting for character device '$devicePath' to be created.")
+                        Timber.d("$devicePath exists now!!!")
                     }
+                    fixCharacterDevicePermissions(devicePath)
+                } catch (e: TimeoutCancellationException) {
+                    // FIXME: show this error to the user
+                    Timber.e("Timed out while waiting for character device '$devicePath' to be created.")
                 }
             }
         }
     }
 
     private fun fixSelinuxPermissions() {
-        val selinuxPolicyCommand = "${rootStateHolder.sepolicyCommand} '$SELINUX_POLICY'"
-        Shell.cmd(selinuxPolicyCommand).exec()
+        val cmdPrefix = rootStateHolder.sepolicyCommand ?: return
+        val policies = listOf(
+            "allow appdomain device chr_file { getattr open read write ioctl lock map }",
+            "allow untrusted_app device chr_file { getattr open read write ioctl lock map }",
+            "allow untrusted_app_all device chr_file { getattr open read write ioctl lock map }",
+            "allow appdomain uhid_device chr_file { getattr open read write ioctl lock map }",
+            "allow untrusted_app uhid_device chr_file { getattr open read write ioctl lock map }",
+            "allow untrusted_app_all uhid_device chr_file { getattr open read write ioctl lock map }"
+        )
+        for (policy in policies) {
+            Shell.cmd("$cmdPrefix \"$policy\"").exec()
+        }
     }
 
     fun fixCharacterDevicePermissions(device: DevicePath) = fixCharacterDevicePermissions(device.path)
@@ -99,16 +107,18 @@ class CharacterDeviceManager private constructor(private val application: Applic
     fun fixCharacterDevicePermissions(device: String) {
         val appUID: Int = application.applicationInfo.uid
 
-        // Set Linux permissions -> only my app user can r/w to the char device
+        // Set Linux permissions -> allow r/w to the char device
         val chownCommand = "chown '${appUID}:${appUID}' $device"
-        val chmodCommand = "chmod 600 $device"
+        val chmodCommand = "chmod 666 $device"
         Shell.cmd(chownCommand).exec()
         Shell.cmd(chmodCommand).exec()
 
-        // Set SELinux permissions -> only my app's selinux context can r/w to the char device
+        // Set SELinux permissions
+        Shell.cmd("chcon 'u:object_r:uhid_device:s0' $device").exec()
         val chconCommand = "chcon 'u:object_r:device:s0:${getSelinuxCategories()}' $device"
         Shell.cmd(chconCommand).exec()
 
+        fixSelinuxPermissions()
         return
     }
 
@@ -136,6 +146,22 @@ class CharacterDeviceManager private constructor(private val application: Applic
     suspend fun deleteCharacterDevices(gadgetUserPreferences: GadgetUserPreferences) {
         useService {
             it.deleteGadget(gadgetUserPreferences)
+        }
+
+        withContext(Dispatchers.IO) {
+            for (devicePath in DevicePaths.all) {
+                try {
+                    withTimeout(3000) {
+                        while (devicePath.exists()) {
+                            Timber.d("$devicePath still exists, sleeping for a bit before trying again...")
+                            delay(50)
+                        }
+                        Timber.d("$devicePath deleted successfully!")
+                    }
+                } catch (e: TimeoutCancellationException) {
+                    Timber.e("Timed out while waiting for character device '$devicePath' to be deleted.")
+                }
+            }
         }
     }
 

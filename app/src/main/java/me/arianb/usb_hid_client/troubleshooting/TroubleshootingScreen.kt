@@ -1,19 +1,28 @@
 package me.arianb.usb_hid_client.troubleshooting
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -46,7 +55,11 @@ class TroubleshootingScreen : Screen {
 }
 
 @Composable
-fun TroubleshootingPage() {
+fun TroubleshootingPage(mainViewModel: MainViewModel = viewModel()) {
+    LaunchedEffect(Unit) {
+        mainViewModel.anyCharacterDeviceMissing()
+    }
+
     BasicPage(
         topBar = { TroubleshootingTopBar() },
         scrollable = true
@@ -56,15 +69,12 @@ fun TroubleshootingPage() {
         //  - [x] create gadget
         //  - [x] remove gadget
         //  - [ ] re-create gadget
-        // TODO: remove Experimental{} once this is ready for production
-        Experimental {
-            LabeledCategory("Gadget Actions") {
-                GadgetActionButtons()
-            }
+        LabeledCategory("Gadget Actions") {
+            GadgetActionButtons(mainViewModel)
         }
 
         LabeledCategory("Debugging Information") {
-            DebuggingInfoList()
+            DebuggingInfoList(mainViewModel)
         }
 
         ExportLogsPreferenceButton()
@@ -80,61 +90,62 @@ private fun TroubleshootingTopBar() {
 }
 
 @Composable
-private fun GadgetActionButtons(mainViewModel: MainViewModel = viewModel()) {
-    // FIXME:
-    //  unsure what the root cause of the issue is yet, but the button always presents
-    //  in the "delete char dev" state (regardless of what the seemingly "real" state of
-    //  things is) when navigating away from and back to the screen. If not transitioning
-    //  between screens, it seems to toggle correctly.
-
-    var isShowingConfirmationAlert by remember { mutableStateOf(false) }
-
+fun GadgetActionButtons(mainViewModel: MainViewModel = viewModel()) {
     val state by mainViewModel.uiState.collectAsState()
+    val isEnabled = !state.missingCharacterDevice
+    val isUpdating = state.isCharacterDeviceUpdating
 
-    val runOnClick: () -> Unit
-    val actionLabel: String
-    if (state.missingCharacterDevice) {
-        runOnClick = { mainViewModel.createCharacterDevices() }
-        actionLabel = "Create Character Devices"
-    } else {
-        runOnClick = { mainViewModel.deleteCharacterDevices() }
-        actionLabel = "Delete Character Devices"
-    }
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Center,
-    ) {
-        Button(onClick = { isShowingConfirmationAlert = true }) {
-            Text(actionLabel)
-        }
-    }
-
-    if (isShowingConfirmationAlert) {
-        AlertDialog(
-            title = { Text("Are you sure you want to do this?") },
-            text = { Text(text = actionLabel) },
-            onDismissRequest = { isShowingConfirmationAlert = false },
-            confirmButton = {
-                TextButton(onClick = {
-                    runOnClick()
-                    isShowingConfirmationAlert = false
-                }) {
-                    Text("Yes")
+    ListItem(
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        headlineContent = {
+            Text(
+                text = "Character Devices",
+                style = MaterialTheme.typography.titleMedium
+            )
+        },
+        supportingContent = {
+            Text(
+                text = if (isUpdating) {
+                    "Updating character devices..."
+                } else if (isEnabled) {
+                    "Active (/dev/hidg0 enabled)"
+                } else {
+                    "Disabled (No character devices)"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        trailingContent = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (isUpdating) {
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .size(20.dp)
+                            .padding(end = 4.dp),
+                        strokeWidth = 2.dp
+                    )
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { isShowingConfirmationAlert = false }) {
-                    Text("Cancel")
-                }
+                Switch(
+                    checked = isEnabled,
+                    enabled = !isUpdating,
+                    onCheckedChange = { checked ->
+                        if (checked) {
+                            mainViewModel.createCharacterDevices()
+                        } else {
+                            mainViewModel.deleteCharacterDevices()
+                        }
+                    }
+                )
             }
-        )
-    }
+        }
+    )
 }
 
 @Composable
-private fun DebuggingInfoList() {
-    val troubleshootingInfo = detectIssues()
+fun DebuggingInfoList(mainViewModel: MainViewModel = viewModel()) {
+    val state by mainViewModel.uiState.collectAsState()
+    val troubleshootingInfo = remember(state) { detectIssues() }
     Timber.d("debug info: %s", troubleshootingInfo.toString())
 
     with(troubleshootingInfo.rootPermissionInfo) {
@@ -274,7 +285,7 @@ private fun GadgetStatusItem(
     }
 
     ListItem(
-        colors = ListItemDefaults.colors(headlineColor = color),
+        colors = ListItemDefaults.colors(headlineColor = color, containerColor = Color.Transparent),
         headlineContent = { Text(title) },
         supportingContent = {
             if (summary != null) {

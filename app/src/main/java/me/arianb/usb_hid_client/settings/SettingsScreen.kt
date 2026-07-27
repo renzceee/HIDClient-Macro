@@ -1,26 +1,40 @@
 package me.arianb.usb_hid_client.settings
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.viewmodel.compose.viewModel
 import cafe.adriel.voyager.core.screen.Screen
 import cafe.adriel.voyager.navigator.Navigator
+import kotlinx.coroutines.launch
+import me.arianb.usb_hid_client.MainViewModel
 import me.arianb.usb_hid_client.R
+import me.arianb.usb_hid_client.macros.MacrosViewModel
 import me.arianb.usb_hid_client.settings.AppSettings.AppThemePreference
+import me.arianb.usb_hid_client.settings.AppSettings.ConfirmMacroDeleteToggle
 import me.arianb.usb_hid_client.settings.AppSettings.DynamicColors
 import me.arianb.usb_hid_client.settings.AppSettings.ExperimentalMode
 import me.arianb.usb_hid_client.settings.AppSettings.FullyDisableGadgetDuringConfiguration
 import me.arianb.usb_hid_client.settings.AppSettings.KeyboardCharacterDevicePath
 import me.arianb.usb_hid_client.settings.AppSettings.PreferenceCategory
 import me.arianb.usb_hid_client.settings.AppSettings.UsbGadgetPath
-import me.arianb.usb_hid_client.settings.AppSettings.ConfirmMacroDeleteToggle
+import me.arianb.usb_hid_client.troubleshooting.DebuggingInfoList
+import me.arianb.usb_hid_client.troubleshooting.ExportLogsPreferenceButton
+import me.arianb.usb_hid_client.troubleshooting.GadgetActionButtons
 import me.arianb.usb_hid_client.ui.theme.PaddingNormal
 import me.arianb.usb_hid_client.ui.theme.isDynamicColorAvailable
 import me.arianb.usb_hid_client.ui.utils.BasicPage
@@ -28,6 +42,10 @@ import me.arianb.usb_hid_client.ui.utils.DarkLightModePreviews
 import me.arianb.usb_hid_client.ui.utils.Experimental
 import me.arianb.usb_hid_client.ui.utils.SimpleNavTopBar
 import me.arianb.usb_hid_client.ui.utils.isExperimentalModeEnabled
+import timber.log.Timber
+
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.ui.unit.dp
 
 class SettingsScreen : Screen {
     @Composable
@@ -37,44 +55,144 @@ class SettingsScreen : Screen {
 }
 
 @Composable
-fun SettingsPage() {
-    val padding = PaddingNormal
+fun SettingsPage(
+    macrosViewModel: MacrosViewModel = viewModel(),
+    mainViewModel: MainViewModel = viewModel(),
+    snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
+    isStandalone: Boolean = true
+) {
+    if (isStandalone) {
+        BasicPage(
+            topBar = { SettingsTopBar() },
+            snackbarHostState = snackbarHostState,
+            horizontalAlignment = Alignment.Start,
+            verticalArrangement = Arrangement.spacedBy(PaddingNormal, Alignment.Top),
+            scrollable = true,
+            padding = PaddingValues(start = PaddingNormal, end = PaddingNormal, bottom = 0.dp)
+        ) {
+            SettingsContent(
+                macrosViewModel = macrosViewModel,
+                mainViewModel = mainViewModel,
+                snackbarHostState = snackbarHostState
+            )
+        }
+    } else {
+        SettingsContent(
+            macrosViewModel = macrosViewModel,
+            mainViewModel = mainViewModel,
+            snackbarHostState = snackbarHostState
+        )
+    }
+}
 
-    BasicPage(
-        topBar = { SettingsTopBar() },
-        horizontalAlignment = Alignment.Start,
-        verticalArrangement = Arrangement.spacedBy(padding, Alignment.Top),
-        scrollable = true
+@Composable
+fun SettingsContent(
+    macrosViewModel: MacrosViewModel = viewModel(),
+    mainViewModel: MainViewModel = viewModel(),
+    snackbarHostState: SnackbarHostState = remember { SnackbarHostState() }
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        mainViewModel.anyCharacterDeviceMissing()
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            try {
+                val content = context.contentResolver.openInputStream(uri)?.use { it.bufferedReader().readText() }
+                if (content != null) {
+                    val result = macrosViewModel.importMacros(content)
+                    result.onSuccess { count ->
+                        val msg = context.getString(R.string.import_success, count)
+                        scope.launch { snackbarHostState.showSnackbar(msg) }
+                    }.onFailure { err ->
+                        val msg = context.getString(R.string.import_failed, err.localizedMessage ?: "Unknown error")
+                        scope.launch { snackbarHostState.showSnackbar(msg) }
+                    }
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to import macros")
+                val msg = context.getString(R.string.import_failed, e.localizedMessage ?: "Unknown error")
+                scope.launch { snackbarHostState.showSnackbar(msg) }
+            }
+        }
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) {
+            try {
+                val jsonString = macrosViewModel.exportSelectedMacros(emptySet())
+                context.contentResolver.openOutputStream(uri)?.use { stream ->
+                    stream.write(jsonString.toByteArray())
+                }
+                val count = macrosViewModel.macrosFlow.value.size
+                val msg = context.getString(R.string.export_success, count)
+                scope.launch { snackbarHostState.showSnackbar(msg) }
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to export macros")
+                val msg = context.getString(R.string.export_failed)
+                scope.launch { snackbarHostState.showSnackbar(msg) }
+            }
+        }
+    }
+
+    PreferenceCategory(
+        title = stringResource(R.string.theme_header),
     ) {
-        PreferenceCategory(
-            title = stringResource(R.string.theme_header),
-        ) {
-            AppThemePreference()
+        AppThemePreference()
 
-            if (isDynamicColorAvailable()) {
-                DynamicColors()
-            }
+        if (isDynamicColorAvailable()) {
+            DynamicColors()
         }
+    }
 
-        // only set `showDivider = false` for the last category.
-        // haven't found a nice way to do that implicitly yet.
-
-        PreferenceCategory(
-            title = stringResource(R.string.misc_header),
-            showDivider = isExperimentalModeEnabled()
-        ) {
-            ExperimentalMode()
-            ConfirmMacroDeleteToggle()
-        }
-        Experimental {
-            PreferenceCategory(
-                title = stringResource(R.string.device_specific_quirks_header),
-                showDivider = false
-            ) {
-                FullyDisableGadgetDuringConfiguration()
-                UsbGadgetPath()
-                KeyboardCharacterDevicePath()
+    PreferenceCategory(
+        title = stringResource(R.string.macros_header),
+    ) {
+        OnClickPreference(
+            title = stringResource(R.string.import_macros),
+            summary = stringResource(R.string.import_macros_summary),
+            onClick = { importLauncher.launch(arrayOf("application/json", "*/*")) }
+        )
+        OnClickPreference(
+            title = stringResource(R.string.export_macros),
+            summary = stringResource(R.string.export_macros_summary),
+            onClick = {
+                if (macrosViewModel.macrosFlow.value.isEmpty()) {
+                    scope.launch { snackbarHostState.showSnackbar(context.getString(R.string.no_macros_to_export)) }
+                } else {
+                    exportLauncher.launch("macros_config.json")
+                }
             }
+        )
+    }
+
+    PreferenceCategory(
+        title = stringResource(R.string.hid_troubleshooting_header),
+    ) {
+        GadgetActionButtons(mainViewModel)
+        DebuggingInfoList(mainViewModel)
+        ExportLogsPreferenceButton()
+    }
+
+    PreferenceCategory(
+        title = stringResource(R.string.misc_header),
+        showDivider = isExperimentalModeEnabled()
+    ) {
+        ExperimentalMode()
+        ConfirmMacroDeleteToggle()
+    }
+
+    Experimental {
+        PreferenceCategory(
+            title = stringResource(R.string.device_specific_quirks_header),
+            showDivider = false
+        ) {
+            FullyDisableGadgetDuringConfiguration()
+            UsbGadgetPath()
+            KeyboardCharacterDevicePath()
         }
     }
 }
@@ -95,11 +213,9 @@ private object AppSettings {
         showDivider: Boolean = true,
         preferences: @Composable (() -> Unit)
     ) {
-        val paddingModifier = Modifier.padding(horizontal = PaddingNormal)
-
         PreferenceCategory(
             title = title,
-            modifier = paddingModifier,
+            modifier = Modifier.fillMaxWidth(),
             showDivider = showDivider,
             preferences = preferences,
         )

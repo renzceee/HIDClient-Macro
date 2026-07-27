@@ -13,7 +13,8 @@ android {
         // SDK support
         minSdk = 26
         targetSdk = 33
-        compileSdk = 35
+        compileSdk = 36
+        ndkVersion = "26.1.10909125"
 
         // App Versioning
         versionCode = 301

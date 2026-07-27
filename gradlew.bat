@@ -55,7 +55,16 @@ goto fail
 
 :findJavaFromJavaHome
 set JAVA_HOME=%JAVA_HOME:"=%
-set JAVA_EXE=%JAVA_HOME%/bin/java.exe
+if exist "%JAVA_HOME%\bin\java.exe" (
+    set "JAVA_EXE=%JAVA_HOME%\bin\java.exe"
+) else if exist "%JAVA_HOME%" (
+    set "JAVA_EXE=%JAVA_HOME%"
+)
+
+if not exist "%JAVA_EXE%" if exist "C:\Program Files\Android\Android Studio\jbr\bin\java.exe" (
+    set "JAVA_HOME=C:\Program Files\Android\Android Studio\jbr"
+    set "JAVA_EXE=C:\Program Files\Android\Android Studio\jbr\bin\java.exe"
+)
 
 if exist "%JAVA_EXE%" goto execute
 

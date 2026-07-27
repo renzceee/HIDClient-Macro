@@ -112,4 +112,23 @@
         logs.
     </string>
 
+    <!-- Macro Import/Export & Multi-Select -->
+    <string name="macros_header">Macros</string>
+    <string name="import_macros">Import Macros</string>
+    <string name="import_macros_summary">Import macros from a JSON configuration file</string>
+    <string name="export_macros">Export Config</string>
+    <string name="export_macros_summary">Export all macros to a JSON configuration file</string>
+    <string name="export_selected_macros">Export Config (%1$d)</string>
+    <string name="hid_troubleshooting_header">HID &amp; Troubleshooting</string>
+    <string name="home">Home</string>
+    <string name="selected_count">%1$d selected</string>
+    <string name="select_all">Select All</string>
+    <string name="deselect_all">Deselect All</string>
+    <string name="delete_selected">Delete Selected</string>
+    <string name="import_success">Successfully imported %1$d macro(s)</string>
+    <string name="import_failed">Failed to import macros: %1$s</string>
+    <string name="export_success">Exported %1$d macro(s) to config</string>
+    <string name="export_failed">Failed to export macros</string>
+    <string name="no_macros_to_export">No macros selected to export</string>
+
 </resources>

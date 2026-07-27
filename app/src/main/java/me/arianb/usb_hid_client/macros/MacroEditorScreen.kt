@@ -1,22 +1,36 @@
 package me.arianb.usb_hid_client.macros
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -27,23 +41,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.TextRange
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.AlertDialog
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.OffsetMapping
-import androidx.compose.ui.text.input.TransformedText
-import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import cafe.adriel.voyager.core.screen.Screen
 import cafe.adriel.voyager.navigator.LocalNavigator
@@ -51,9 +61,10 @@ import cafe.adriel.voyager.navigator.currentOrThrow
 import me.arianb.usb_hid_client.settings.Macro
 import me.arianb.usb_hid_client.ui.theme.PaddingNormal
 import me.arianb.usb_hid_client.ui.utils.BasicPage
-import me.arianb.usb_hid_client.ui.utils.BasicTopBar
+import me.arianb.usb_hid_client.ui.utils.SimpleNavTopBar
 
 class MacroEditorScreen(private val macroId: String? = null) : Screen {
+
     @Composable
     @OptIn(ExperimentalMaterial3Api::class)
     override fun Content() {
@@ -61,186 +72,273 @@ class MacroEditorScreen(private val macroId: String? = null) : Screen {
         val macrosViewModel: MacrosViewModel = viewModel()
 
         var name by remember { mutableStateOf("") }
-        var scriptValue by remember { mutableStateOf(TextFieldValue("")) }
+        val editorState = remember { MacroCodeEditorState("") }
+        var existingMacro by remember { mutableStateOf<Macro?>(null) }
 
         LaunchedEffect(macroId) {
             macroId?.let { id ->
                 macrosViewModel.getMacroById(id)?.let { macro ->
+                    existingMacro = macro
                     name = macro.name
-                    scriptValue = TextFieldValue(macro.script)
+                    editorState.setText(macro.script)
                 }
             }
         }
 
         fun saveAndExit() {
-            val existingId = macroId
-            val macro = if (existingId == null) {
-                Macro(name = name.ifBlank { "New Macro" }, script = scriptValue.text)
+            val currentScript = editorState.textFieldValue.text
+            val currentMacro = existingMacro
+            val macro = if (currentMacro == null) {
+                Macro(name = name.ifBlank { "New Macro" }, script = currentScript)
             } else {
-                Macro(id = existingId, name = name.ifBlank { "Macro" }, script = scriptValue.text)
+                currentMacro.copy(
+                    name = name.ifBlank { "Macro" },
+                    script = currentScript
+                )
             }
             macrosViewModel.addOrUpdateMacro(macro)
             navigator.pop()
         }
 
-        val padding = PaddingNormal
-        val clipboard = LocalClipboardManager.current
+        // Color theme palette for DuckyScript syntax
+        val syntaxColors = SyntaxColors(
+            commandColor = MaterialTheme.colorScheme.primary,
+            keyColor = MaterialTheme.colorScheme.tertiary,
+            stringColor = MaterialTheme.colorScheme.secondary,
+            numberColor = MaterialTheme.colorScheme.error.copy(alpha = 0.85f),
+            commentColor = MaterialTheme.colorScheme.outline,
+            warningColor = MaterialTheme.colorScheme.error,
+            highlightBgColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+        )
+
         BasicPage(
             topBar = {
-                BasicTopBar(
-                    title = if (macroId == null) "New Macro" else "Edit Macro",
-                    actions = {
-                        IconButton(onClick = { clipboard.setText(AnnotatedString(scriptValue.text)) }) {
-                            Icon(painter = androidx.compose.ui.res.painterResource(id = me.arianb.usb_hid_client.R.drawable.ic_copy), contentDescription = "Copy script")
-                        }
-                    }
+                SimpleNavTopBar(
+                    title = if (macroId == null) "New Macro" else "Edit Macro"
                 )
             },
             horizontalAlignment = Alignment.Start,
-            verticalArrangement = Arrangement.spacedBy(padding, Alignment.Top),
-            // Remove extra top padding under the top app bar
-            padding = androidx.compose.foundation.layout.PaddingValues(start = PaddingNormal, end = PaddingNormal, bottom = PaddingNormal),
+            verticalArrangement = Arrangement.Top,
+            padding = androidx.compose.foundation.layout.PaddingValues(
+                start = PaddingNormal,
+                end = PaddingNormal,
+                bottom = PaddingNormal
+            ),
             floatingActionButton = {
-                FloatingActionButton(onClick = { saveAndExit() }) {
+                FloatingActionButton(
+                    onClick = { saveAndExit() },
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    shape = RoundedCornerShape(18.dp)
+                ) {
                     Icon(Icons.Filled.Check, contentDescription = "Save")
                 }
             }
         ) {
             Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // Macro Name Field
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Name") },
+                    label = { Text("Macro Name") },
                     singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                OutlinedTextField(
-                    value = scriptValue,
-                    onValueChange = { scriptValue = it },
-                    label = { Text("Script") },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 8,
-                    textStyle = androidx.compose.material3.MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                    visualTransformation = run {
-                        // Capture colors in composable scope (MaterialTheme) and use them inside the transformer
-                        val cmdColor = androidx.compose.material3.MaterialTheme.colorScheme.primary
-                        val keyColor = androidx.compose.material3.MaterialTheme.colorScheme.tertiary
-                        val numColor = androidx.compose.material3.MaterialTheme.colorScheme.secondary
-                        val commentColor = androidx.compose.material3.MaterialTheme.colorScheme.outline
-                        VisualTransformation { text ->
-                            val src = text.text
-                            val commandRegex = Regex("^[\\t ]*([A-Za-z0-9_]+)")
-                            val keyRegex = Regex("\\b(CTRL|CONTROL|ALT|SHIFT|GUI|WINDOWS|WIN|CMD|META|SUPER|ENTER|TAB|ESC|ESCAPE|SPACE|BACKSPACE|BKSP|DELETE|DEL|UP|DOWN|LEFT|RIGHT|HOME|END|PAGEUP|PGUP|PAGEDOWN|PGDN|F(?:1[0-2]?|[2-9]))\\b", RegexOption.IGNORE_CASE)
-                            val numRegex = Regex("\\b\\d+\\b")
-                            val lines = src.split('\n')
-                            val annotated = buildAnnotatedString {
-                                append(src)
-                                var pos = 0
-                                for (line in lines) {
-                                    val lineStart = pos
-                                    val lineEnd = pos + line.length
-                                    val trimmed = line.trimStart()
-                                    if (trimmed.startsWith("REM", ignoreCase = true)) {
-                                        addStyle(SpanStyle(color = commentColor), lineStart, lineEnd)
-                                    } else {
-                                        val m = commandRegex.find(line)
-                                        if (m != null) {
-                                            val s = lineStart + m.groups[1]!!.range.first
-                                            val e = lineStart + m.groups[1]!!.range.last + 1
-                                            addStyle(SpanStyle(color = cmdColor, fontWeight = FontWeight.SemiBold), s, e)
-                                        }
-                                        keyRegex.findAll(line).forEach { mm ->
-                                            val s = lineStart + mm.range.first
-                                            val e = lineStart + mm.range.last + 1
-                                            addStyle(SpanStyle(color = keyColor), s, e)
-                                        }
-                                        numRegex.findAll(line).forEach { mm ->
-                                            val s = lineStart + mm.range.first
-                                            val e = lineStart + mm.range.last + 1
-                                            addStyle(SpanStyle(color = numColor), s, e)
-                                        }
-                                    }
-                                    pos = lineEnd + 1
-                                }
-                            }
-                            TransformedText(annotated, OffsetMapping.Identity)
-                        }
-                    }
+                // Quick Insert Keyboard Toolbar (Premade Text Presets)
+                var showDelayDialog by remember { mutableStateOf(false) }
+                val insertChips = listOf(
+                    "STRING" to "STRING ",
+                    "ENTER" to "ENTER\n",
+                    "CTRL ALT DEL" to "CTRL ALT DEL\n",
+                    "GUI r" to "GUI r\n",
+                    "DELAY 100" to "DELAY 100\n",
+                    "REPEAT 3" to "REPEAT 3\n",
+                    "REM" to "REM ",
+                    "TAB" to "TAB\n",
+                    "ESC" to "ESC\n",
+                    "SPACE" to "SPACE\n"
                 )
 
-                // Preset buttons
-                Row {
-                    fun insertToken(token: String) {
-                        val text = scriptValue.text
-                        val sel = scriptValue.selection
-                        val start = sel.start.coerceIn(0, text.length)
-                        val end = sel.end.coerceIn(0, text.length)
-                        val newText = buildString(text.length + token.length) {
-                            append(text.substring(0, minOf(start, end)))
-                            append(token)
-                            append(text.substring(maxOf(start, end)))
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    items(insertChips) { (label, token) ->
+                        TextButton(
+                            onClick = { editorState.insertToken(token) },
+                            modifier = Modifier.height(36.dp),
+                            shape = RoundedCornerShape(18.dp)
+                        ) {
+                            Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         }
-                        val newCursor = minOf(start, end) + token.length
-                        scriptValue = TextFieldValue(newText, selection = TextRange(newCursor))
                     }
-                    val buttons = listOf(
-                        "STRING" to "STRING ",
-                        "ENTER" to "ENTER\n",
-                        "CTRL ALT DEL" to "CTRL ALT DEL\n",
-                        "GUI r" to "GUI r\n",
-                        "DELAY 100" to "DELAY 100\n",
-                    )
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(buttons) { (label, token) ->
-                            TextButton(onClick = { insertToken(token) }) { Text(label) }
-                        }
-                        item {
-                            var showDelayDialog by remember { mutableStateOf(false) }
-                            TextButton(onClick = { showDelayDialog = true }) { Text("ADD DELAY") }
-
-                            if (showDelayDialog) {
-                                var delayText by remember { mutableStateOf("") }
-                                AlertDialog(
-                                    onDismissRequest = { showDelayDialog = false },
-                                    title = { Text("Add delay (ms)") },
-                                    text = {
-                                        OutlinedTextField(
-                                            value = delayText,
-                                            onValueChange = { delayText = it.filter { ch -> ch.isDigit() } },
-                                            label = { Text("Milliseconds") },
-                                            singleLine = true,
-                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                            modifier = Modifier.fillMaxWidth()
-                                        )
-                                    },
-                                    confirmButton = {
-                                        TextButton(onClick = {
-                                            val ms = delayText.toLongOrNull()
-                                            if (ms != null && ms >= 0) insertToken("DELAY $ms\n")
-                                            showDelayDialog = false
-                                        }) { Text("Add") }
-                                    },
-                                    dismissButton = {
-                                        TextButton(onClick = { showDelayDialog = false }) { Text("Cancel") }
-                                    }
-                                )
-                            }
+                    item {
+                        TextButton(
+                            onClick = { showDelayDialog = true },
+                            modifier = Modifier.height(36.dp),
+                            shape = RoundedCornerShape(18.dp)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("DELAY", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.size(8.dp))
-                Text(
-                    "Tips: Ducky-style. Examples: GUI r, STRING notepad, ENTER, DELAY 250, DEFAULT_DELAY 100, CTRL ALT DEL, REPEAT 3.",
-                    color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant
+                if (showDelayDialog) {
+                    var delayText by remember { mutableStateOf("") }
+                    AlertDialog(
+                        onDismissRequest = { showDelayDialog = false },
+                        title = { Text("Insert Delay (ms)") },
+                        text = {
+                            OutlinedTextField(
+                                value = delayText,
+                                onValueChange = { delayText = it.filter { ch -> ch.isDigit() } },
+                                label = { Text("Milliseconds") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                val ms = delayText.toLongOrNull()
+                                if (ms != null && ms >= 0) editorState.insertToken("DELAY $ms\n")
+                                showDelayDialog = false
+                            }) { Text("Insert") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showDelayDialog = false }) { Text("Cancel") }
+                        }
+                    )
+                }
+
+                // Main Code Editor Area (Gutter + Canvas)
+                val scrollState = rememberScrollState()
+                val lineCol = editorState.getLineAndColumn()
+                val activeLine = lineCol.first
+                val totalLines = editorState.getTotalLines()
+
+                val lineCountDigits = totalLines.toString().length.coerceAtLeast(2)
+                val gutterWidth = (lineCountDigits * 10 + 20).dp
+
+                val editorTextStyle = TextStyle(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 13.sp,
+                    lineHeight = 20.sp,
+                    platformStyle = PlatformTextStyle(includeFontPadding = false),
+                    lineHeightStyle = LineHeightStyle(
+                        alignment = LineHeightStyle.Alignment.Center,
+                        trim = LineHeightStyle.Trim.None
+                    )
                 )
+
+                val primaryColor = MaterialTheme.colorScheme.primary
+                val outlineColor = MaterialTheme.colorScheme.outline
+
+                val gutterAnnotatedString = remember(totalLines, activeLine, primaryColor, outlineColor) {
+                    buildAnnotatedString {
+                        for (i in 1..totalLines) {
+                            if (i > 1) append("\n")
+                            val start = length
+                            append(i.toString())
+                            val end = length
+                            val isActive = i == activeLine
+                            addStyle(
+                                SpanStyle(
+                                    color = if (isActive) primaryColor else outlineColor,
+                                    fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
+                                ),
+                                start,
+                                end
+                            )
+                        }
+                    }
+                }
+
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .border(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        .clip(RoundedCornerShape(8.dp)),
+                    color = MaterialTheme.colorScheme.surface
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                            .padding(bottom = 140.dp)
+                    ) {
+                        // Line Number Gutter
+                        Box(
+                            modifier = Modifier
+                                .width(gutterWidth)
+                                .fillMaxHeight()
+                                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                                .padding(vertical = 12.dp, horizontal = 4.dp),
+                            contentAlignment = Alignment.TopEnd
+                        ) {
+                            Text(
+                                text = gutterAnnotatedString,
+                                style = editorTextStyle.copy(textAlign = TextAlign.End),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+
+                        Spacer(
+                            modifier = Modifier
+                                .width(1.dp)
+                                .fillMaxHeight()
+                                .background(MaterialTheme.colorScheme.outlineVariant)
+                        )
+
+                        // Code Editor BasicTextField
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxSize()
+                                .padding(vertical = 12.dp, horizontal = 8.dp)
+                        ) {
+                            // Active Line Background Highlight
+                            val activeLineTopOffset = ((activeLine - 1) * 20).dp
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(20.dp)
+                                    .padding(top = activeLineTopOffset)
+                                    .background(
+                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.15f)
+                                    )
+                            )
+
+                            val visualTransformation = remember(syntaxColors) {
+                                DuckyScriptSyntaxHighlighter.createVisualTransformation(syntaxColors)
+                            }
+
+                            BasicTextField(
+                                value = editorState.textFieldValue,
+                                onValueChange = { editorState.updateText(it) },
+                                modifier = Modifier.fillMaxWidth(),
+                                textStyle = editorTextStyle.copy(color = MaterialTheme.colorScheme.onSurface),
+                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                                visualTransformation = visualTransformation
+                            )
+                        }
+                    }
+                }
             }
         }
     }
 }
+

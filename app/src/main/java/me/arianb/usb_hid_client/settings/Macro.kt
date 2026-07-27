@@ -9,4 +9,6 @@ data class Macro(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
     val script: String,
+    val autoRunEnabled: Boolean = false,
+    val autoRunOrder: Int = 0
 ) : Parcelable

@@ -3,6 +3,7 @@ package me.arianb.usb_hid_client.settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemColors
@@ -24,6 +25,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.ui.graphics.Color
 import me.arianb.usb_hid_client.ui.utils.LabeledCategory
 import kotlin.reflect.KProperty1
 
@@ -31,7 +33,7 @@ import kotlin.reflect.KProperty1
 @Composable
 fun PreferenceCategory(
     title: String,
-    modifier: Modifier = Modifier,
+    modifier: Modifier = Modifier.fillMaxWidth(),
     showDivider: Boolean = true,
     preferences: @Composable () -> Unit
 ) = LabeledCategory(title, modifier, showDivider) {
@@ -48,6 +50,7 @@ fun SwitchPreference(
     var isChecked by remember { mutableStateOf(viewModel.getPreference(preference)) }
 
     ListItem(
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         headlineContent = { Text(title) },
         supportingContent = {
             if (summary != null) {
@@ -141,11 +144,12 @@ fun OnClickPreference(
     onClick: () -> Unit,
     trailingContent: @Composable (() -> Unit)? = null
 ) {
-    val defaults = ListItemDefaults.colors()
+    val defaults = ListItemDefaults.colors(containerColor = Color.Transparent)
     val listItemColors: ListItemColors = if (enabled) {
         defaults
     } else {
         ListItemDefaults.colors(
+            containerColor = Color.Transparent,
             headlineColor = defaults.disabledHeadlineColor,
             leadingIconColor = defaults.disabledLeadingIconColor,
             trailingIconColor = defaults.disabledTrailingIconColor,

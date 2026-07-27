@@ -43,5 +43,10 @@ google-services.json
 # Plugin config
 /.idea/git_toolbox_prj.xml
 
+# Kotlin / IDE
+.kotlin/
+/.idea/markdown.xml
+
 # Other
 .DS_Store
+

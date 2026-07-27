@@ -38,6 +38,13 @@ import me.arianb.usb_hid_client.settings.SettingsViewModel
 import me.arianb.usb_hid_client.ui.theme.PaddingLarge
 import me.arianb.usb_hid_client.ui.theme.PaddingNormal
 import me.arianb.usb_hid_client.ui.theme.USBHIDClientTheme
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.OutlinedCard
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 
 @Composable
 fun BasicPage(
@@ -48,6 +55,7 @@ fun BasicPage(
     verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(PaddingNormal, Alignment.Top),
     scrollable: Boolean = false,
     floatingActionButton: (@Composable () -> Unit)? = null,
+    bottomBar: (@Composable () -> Unit)? = null,
     content: @Composable (ColumnScope.() -> Unit)
 ) {
     val scrollableModifier = if (scrollable) {
@@ -63,6 +71,11 @@ fun BasicPage(
         ) {
             Scaffold(
                 topBar = topBar,
+                bottomBar = if (bottomBar == null) {
+                    {}
+                } else {
+                    bottomBar
+                },
                 snackbarHost = if (snackbarHostState == null) {
                     {}
                 } else {
@@ -140,15 +153,31 @@ fun LabeledCategory(
     showDivider: Boolean = true,
     content: @Composable () -> Unit
 ) {
-    Text(
-        text = title,
-        modifier = modifier,
-        color = MaterialTheme.colorScheme.primary,
-        style = MaterialTheme.typography.titleSmall,
-    )
-    content()
-    if (showDivider) {
-        HorizontalDivider()
+    OutlinedCard(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+        colors = CardDefaults.outlinedCardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(vertical = 6.dp)
+        ) {
+            Text(
+                text = title,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            if (showDivider) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+            }
+            content()
+        }
     }
 }
 

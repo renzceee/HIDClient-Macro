@@ -25,6 +25,7 @@ import androidx.core.widget.TextViewCompat
 import cafe.adriel.voyager.core.screen.Screen
 import cafe.adriel.voyager.navigator.Navigator
 import me.arianb.usb_hid_client.R
+import me.arianb.usb_hid_client.ui.components.KsuCard
 import me.arianb.usb_hid_client.ui.theme.PaddingExtraLarge
 import me.arianb.usb_hid_client.ui.theme.PaddingNone
 import me.arianb.usb_hid_client.ui.theme.PaddingNormal
@@ -33,7 +34,6 @@ import me.arianb.usb_hid_client.ui.utils.BasicPage
 import me.arianb.usb_hid_client.ui.utils.DarkLightModePreviews
 import me.arianb.usb_hid_client.ui.utils.SimpleNavTopBar
 import me.arianb.usb_hid_client.ui.utils.getColorByTheme
-
 
 class HelpScreen : Screen {
     @Composable
@@ -55,12 +55,14 @@ fun HelpPage() {
     BasicPage(
         topBar = { HelpTopBar() },
         padding = PaddingValues(all = PaddingNormal),
-        verticalArrangement = Arrangement.spacedBy(PaddingNone, Alignment.Top),
+        verticalArrangement = Arrangement.spacedBy(PaddingNormal, Alignment.Top),
+        scrollable = true
     ) {
         for (pair in questionAnswerPairs) {
             key(pair) {
-                QuestionAnswer(pair.first, pair.second)
-                Spacer(Modifier.height(PaddingExtraLarge))
+                KsuCard {
+                    QuestionAnswer(pair.first, pair.second)
+                }
             }
         }
     }

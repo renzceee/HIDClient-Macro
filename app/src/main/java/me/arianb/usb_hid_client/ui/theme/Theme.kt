@@ -21,13 +21,19 @@ import me.arianb.usb_hid_client.settings.AppTheme
 import me.arianb.usb_hid_client.settings.SettingsViewModel
 
 private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
+    primary = KsuPrimaryDark,
+    onPrimary = KsuOnPrimaryDark,
+    primaryContainer = KsuPrimaryContainerDark,
+    onPrimaryContainer = KsuOnPrimaryContainerDark,
     secondary = PurpleGrey80,
     tertiary = Pink80,
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
+    primary = KsuPrimaryLight,
+    onPrimary = KsuOnPrimaryLight,
+    primaryContainer = KsuPrimaryContainerLight,
+    onPrimaryContainer = KsuOnPrimaryContainerLight,
     secondary = PurpleGrey40,
     tertiary = Pink40
 )
@@ -72,10 +78,11 @@ fun USBHIDClientTheme(
         SideEffect {
             val window = (view.context as Activity).window
             window.statusBarColor = colorScheme.background.toArgb()
+            window.navigationBarColor = colorScheme.background.toArgb()
 
-            // FIXME: I'm flipping darkTheme because for SOME REASON, this property seems to be having
-            //        the exact opposite effect of what it says it should do. Or I'm misunderstanding.
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
+            val insetsController = WindowCompat.getInsetsController(window, view)
+            insetsController.isAppearanceLightStatusBars = !darkTheme
+            insetsController.isAppearanceLightNavigationBars = !darkTheme
         }
     }
 

@@ -137,6 +137,18 @@ class UserPreferencesRepository private constructor(application: Application) {
         _userPreferencesFlow.update { userPreferences }
     }
 
+    private fun resequenceAutoRunOrders(list: List<Macro>): List<Macro> {
+        val enabledSorted = list.filter { it.autoRunEnabled }.sortedBy { it.autoRunOrder }
+        val orderMap = enabledSorted.mapIndexed { index, macro -> macro.id to (index + 1) }.toMap()
+        return list.map { macro ->
+            if (macro.autoRunEnabled) {
+                macro.copy(autoRunOrder = orderMap[macro.id] ?: 0)
+            } else {
+                macro.copy(autoRunOrder = 0)
+            }
+        }
+    }
+
     private fun getMacrosInternal(): List<Macro> {
         val json = AppPreference.MacrosJson.getValue(sharedPreferences)
         val array = JSONArray(json)
@@ -148,13 +160,28 @@ class UserPreferencesRepository private constructor(application: Application) {
                     id = obj.optString("id"),
                     name = obj.optString("name"),
                     script = obj.optString("script"),
+                    autoRunEnabled = obj.optBoolean("autoRunEnabled", false),
+                    autoRunOrder = obj.optInt("autoRunOrder", 0),
                 )
             )
         }
-        return list
+        return resequenceAutoRunOrders(list)
     }
 
     fun getMacros(): List<Macro> = getMacrosInternal()
+
+    fun toggleMacroAutoRun(id: String) {
+        val current = getMacrosInternal().toMutableList()
+        val idx = current.indexOfFirst { it.id == id }
+        if (idx >= 0) {
+            val target = current[idx]
+            val newEnabled = !target.autoRunEnabled
+            val maxOrder = current.filter { it.autoRunEnabled }.maxOfOrNull { it.autoRunOrder } ?: 0
+            val newOrder = if (newEnabled) maxOrder + 1 else 0
+            current[idx] = target.copy(autoRunEnabled = newEnabled, autoRunOrder = newOrder)
+            saveMacros(current)
+        }
+    }
 
     fun addOrUpdateMacro(macro: Macro) {
         val current = getMacrosInternal().toMutableList()
@@ -172,13 +199,77 @@ class UserPreferencesRepository private constructor(application: Application) {
         saveMacros(current)
     }
 
-    private fun saveMacros(list: List<Macro>) {
+    fun deleteMacros(ids: Set<String>) {
+        val current = getMacrosInternal().filterNot { it.id in ids }
+        saveMacros(current)
+    }
+
+    fun exportMacrosJson(selectedIds: Set<String> = emptySet()): String {
+        val all = getMacrosInternal()
+        val toExport = if (selectedIds.isEmpty()) all else all.filter { it.id in selectedIds }
         val array = JSONArray()
-        list.forEach {
+        toExport.forEach {
             val obj = JSONObject()
             obj.put("id", it.id)
             obj.put("name", it.name)
             obj.put("script", it.script)
+            obj.put("autoRunEnabled", it.autoRunEnabled)
+            obj.put("autoRunOrder", it.autoRunOrder)
+            array.put(obj)
+        }
+        return array.toString(2)
+    }
+
+    fun importMacros(jsonContent: String): Int {
+        val trimmed = jsonContent.trim()
+        if (trimmed.isEmpty()) return 0
+
+        val newMacros = mutableListOf<Macro>()
+        val array = if (trimmed.startsWith("[")) {
+            JSONArray(trimmed)
+        } else if (trimmed.startsWith("{")) {
+            val obj = JSONObject(trimmed)
+            obj.optJSONArray("macros") ?: JSONArray()
+        } else {
+            throw IllegalArgumentException("Invalid JSON format")
+        }
+
+        for (i in 0 until array.length()) {
+            val item = array.getJSONObject(i)
+            val name = item.optString("name", "").ifBlank { "Imported Macro ${i + 1}" }
+            val script = item.optString("script", "")
+            val autoRunEnabled = item.optBoolean("autoRunEnabled", false)
+            val autoRunOrder = item.optInt("autoRunOrder", 0)
+            newMacros.add(
+                Macro(
+                    id = java.util.UUID.randomUUID().toString(),
+                    name = name,
+                    script = script,
+                    autoRunEnabled = autoRunEnabled,
+                    autoRunOrder = autoRunOrder
+                )
+            )
+        }
+
+        if (newMacros.isNotEmpty()) {
+            val current = getMacrosInternal().toMutableList()
+            current.addAll(newMacros)
+            saveMacros(current)
+        }
+
+        return newMacros.size
+    }
+
+    private fun saveMacros(list: List<Macro>) {
+        val resequenced = resequenceAutoRunOrders(list)
+        val array = JSONArray()
+        resequenced.forEach {
+            val obj = JSONObject()
+            obj.put("id", it.id)
+            obj.put("name", it.name)
+            obj.put("script", it.script)
+            obj.put("autoRunEnabled", it.autoRunEnabled)
+            obj.put("autoRunOrder", it.autoRunOrder)
             array.put(obj)
         }
         AppPreference.MacrosJson.setValue(array.toString())
