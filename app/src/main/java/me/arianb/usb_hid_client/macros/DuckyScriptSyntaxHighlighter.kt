@@ -24,8 +24,14 @@ data class SyntaxColors(
 object DuckyScriptSyntaxHighlighter {
 
     private val KEYWORD_COMMANDS = setOf(
-        "STRING", "STRINGLN", "DELAY", "DEFAULT_DELAY", "DEFAULTDELAY", "REPEAT",
+        "STRING", "STRINGLN", "DELAY", "DEFAULT_DELAY", "DEFAULTDELAY", "STRINGDELAY", "STRING_DELAY", "REPEAT",
+        "VAR", "DEFINE", "IF", "ELSE", "END_IF", "ENDIF", "WHILE", "END_WHILE", "ENDWHILE",
+        "FOR", "END_FOR", "ENDFOR", "FUNCTION", "END_FUNCTION", "ENDFUNCTION", "HOLD", "RELEASE",
         "ENTER", "SPACE", "WINDOWS", "GUI", "MENU", "APP"
+    )
+
+    private val HARDWARE_WARNING_COMMANDS = setOf(
+        "ATTACKMODE", "EXFIL"
     )
 
     private val KEY_MODIFIERS = setOf(
@@ -34,11 +40,12 @@ object DuckyScriptSyntaxHighlighter {
         "UP", "DOWN", "LEFT", "RIGHT", "HOME", "END",
         "PAGEUP", "PGUP", "PAGEDOWN", "PGDN",
         "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
-        "CAPSLOCK", "PRINTSCREEN"
+        "CAPSLOCK", "PRINTSCREEN", "INSERT", "PAUSE", "MENU", "APP"
     )
 
     private val COMMAND_REGEX = Regex("^[\\t ]*([A-Za-z0-9_]+)")
     private val KEY_REGEX = Regex("\\b(" + KEY_MODIFIERS.joinToString("|") + ")\\b", RegexOption.IGNORE_CASE)
+    private val VAR_REGEX = Regex("\\$[A-Za-z0-9_]+")
     private val NUM_REGEX = Regex("\\b\\d+\\b")
 
     fun highlight(text: String, colors: SyntaxColors, searchHighlightRanges: List<IntRange> = emptyList()): AnnotatedString {

@@ -2,15 +2,18 @@ package me.arianb.usb_hid_client.macros
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,12 +25,14 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -43,8 +48,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -114,7 +122,16 @@ class MacroEditorScreen(private val macroId: String? = null) : Screen {
         BasicPage(
             topBar = {
                 SimpleNavTopBar(
-                    title = if (macroId == null) "New Macro" else "Edit Macro"
+                    title = if (macroId == null) "New Macro" else "Edit Macro",
+                    actions = {
+                        IconButton(onClick = { editorState.toggleSoftWrap() }) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.List,
+                                contentDescription = if (editorState.isSoftWrapEnabled) "Disable Soft Wrap" else "Enable Soft Wrap",
+                                tint = if (editorState.isSoftWrapEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                            )
+                        }
+                    }
                 )
             },
             horizontalAlignment = Alignment.Start,
@@ -153,6 +170,7 @@ class MacroEditorScreen(private val macroId: String? = null) : Screen {
                 var showDelayDialog by remember { mutableStateOf(false) }
                 val insertChips = listOf(
                     "STRING" to "STRING ",
+                    "STRINGLN" to "STRINGLN ",
                     "ENTER" to "ENTER\n",
                     "CTRL ALT DEL" to "CTRL ALT DEL\n",
                     "GUI r" to "GUI r\n",
@@ -219,14 +237,18 @@ class MacroEditorScreen(private val macroId: String? = null) : Screen {
                     )
                 }
 
-                // Main Code Editor Area (Gutter + Canvas)
-                val scrollState = rememberScrollState()
+                // Main Code Editor Area (Precise Gutter Y-Positioning for Wrapped Lines)
+                val verticalScrollState = rememberScrollState()
+                val horizontalScrollState = rememberScrollState()
                 val lineCol = editorState.getLineAndColumn()
                 val activeLine = lineCol.first
                 val totalLines = editorState.getTotalLines()
+                val physicalLineStarts = remember(editorState.textFieldValue.text) {
+                    editorState.getPhysicalLineStartIndices()
+                }
 
                 val lineCountDigits = totalLines.toString().length.coerceAtLeast(2)
-                val gutterWidth = (lineCountDigits * 10 + 20).dp
+                val gutterWidth = (lineCountDigits * 10 + 22).dp
 
                 val editorTextStyle = TextStyle(
                     fontFamily = FontFamily.Monospace,
@@ -241,26 +263,9 @@ class MacroEditorScreen(private val macroId: String? = null) : Screen {
 
                 val primaryColor = MaterialTheme.colorScheme.primary
                 val outlineColor = MaterialTheme.colorScheme.outline
+                val density = LocalDensity.current
 
-                val gutterAnnotatedString = remember(totalLines, activeLine, primaryColor, outlineColor) {
-                    buildAnnotatedString {
-                        for (i in 1..totalLines) {
-                            if (i > 1) append("\n")
-                            val start = length
-                            append(i.toString())
-                            val end = length
-                            val isActive = i == activeLine
-                            addStyle(
-                                SpanStyle(
-                                    color = if (isActive) primaryColor else outlineColor,
-                                    fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
-                                ),
-                                start,
-                                end
-                            )
-                        }
-                    }
-                }
+                var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
 
                 Surface(
                     modifier = Modifier
@@ -277,10 +282,10 @@ class MacroEditorScreen(private val macroId: String? = null) : Screen {
                     Row(
                         modifier = Modifier
                             .fillMaxSize()
-                            .verticalScroll(scrollState)
-                            .padding(bottom = 140.dp)
+                            .verticalScroll(verticalScrollState)
+                            .padding(bottom = 120.dp)
                     ) {
-                        // Line Number Gutter
+                        // Line Number Gutter (Precise Y-Offset Positioned based on physical lines)
                         Box(
                             modifier = Modifier
                                 .width(gutterWidth)
@@ -289,11 +294,55 @@ class MacroEditorScreen(private val macroId: String? = null) : Screen {
                                 .padding(vertical = 12.dp, horizontal = 4.dp),
                             contentAlignment = Alignment.TopEnd
                         ) {
-                            Text(
-                                text = gutterAnnotatedString,
-                                style = editorTextStyle.copy(textAlign = TextAlign.End),
-                                modifier = Modifier.fillMaxWidth()
-                            )
+                            val layout = textLayoutResult
+                            if (layout != null) {
+                                for (i in 0 until totalLines) {
+                                    val lineNum = i + 1
+                                    val startChar = if (i < physicalLineStarts.size) physicalLineStarts[i] else 0
+                                    val visualLine = layout.getLineForOffset(startChar)
+                                    val topPx = layout.getLineTop(visualLine)
+                                    val topDp = with(density) { topPx.toDp() }
+                                    val isActive = lineNum == activeLine
+
+                                    Text(
+                                        text = lineNum.toString(),
+                                        style = editorTextStyle.copy(
+                                            color = if (isActive) primaryColor else outlineColor,
+                                            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
+                                            textAlign = TextAlign.End
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .offset(y = topDp)
+                                    )
+                                }
+                            } else {
+                                // Fallback before initial layout measurement
+                                val fallbackAnnotatedString: AnnotatedString = remember(totalLines, activeLine, primaryColor, outlineColor) {
+                                    buildAnnotatedString {
+                                        for (i in 1..totalLines) {
+                                            if (i > 1) append("\n")
+                                            val start = length
+                                            append(i.toString())
+                                            val end = length
+                                            val isActive = i == activeLine
+                                            addStyle(
+                                                SpanStyle(
+                                                    color = if (isActive) primaryColor else outlineColor,
+                                                    fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
+                                                ),
+                                                start,
+                                                end
+                                            )
+                                        }
+                                    }
+                                }
+                                Text(
+                                    text = fallbackAnnotatedString,
+                                    style = editorTextStyle.copy(textAlign = TextAlign.End),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
                         }
 
                         Spacer(
@@ -303,36 +352,64 @@ class MacroEditorScreen(private val macroId: String? = null) : Screen {
                                 .background(MaterialTheme.colorScheme.outlineVariant)
                         )
 
-                        // Code Editor BasicTextField
-                        Box(
-                            modifier = Modifier
+                        // Code Editor Field Container
+                        val codeEditorBoxModifier = if (editorState.isSoftWrapEnabled) {
+                            Modifier
                                 .weight(1f)
                                 .fillMaxSize()
                                 .padding(vertical = 12.dp, horizontal = 8.dp)
-                        ) {
-                            // Active Line Background Highlight
-                            val activeLineTopOffset = ((activeLine - 1) * 20).dp
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(20.dp)
-                                    .padding(top = activeLineTopOffset)
-                                    .background(
-                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.15f)
-                                    )
-                            )
+                        } else {
+                            Modifier
+                                .weight(1f)
+                                .fillMaxSize()
+                                .horizontalScroll(horizontalScrollState)
+                                .padding(vertical = 12.dp, horizontal = 8.dp)
+                        }
+
+                        Box(modifier = codeEditorBoxModifier) {
+                            // Active Line Background Highlight (Calculated precisely from Layout)
+                            val layout = textLayoutResult
+                            if (layout != null && activeLine <= physicalLineStarts.size) {
+                                val startChar = physicalLineStarts[activeLine - 1]
+                                val endChar = if (activeLine < physicalLineStarts.size) physicalLineStarts[activeLine] - 1 else editorState.getTotalCharacters()
+                                val startVLine = layout.getLineForOffset(startChar)
+                                val endVLine = layout.getLineForOffset(endChar.coerceAtLeast(startChar))
+                                val topPx = layout.getLineTop(startVLine)
+                                val bottomPx = layout.getLineBottom(endVLine)
+                                val topDp = with(density) { topPx.toDp() }
+                                val heightDp = with(density) { (bottomPx - topPx).toDp() }
+
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(heightDp)
+                                        .offset(y = topDp)
+                                        .background(
+                                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.15f)
+                                        )
+                                )
+                            }
 
                             val visualTransformation = remember(syntaxColors) {
                                 DuckyScriptSyntaxHighlighter.createVisualTransformation(syntaxColors)
                             }
 
+                            val textFieldModifier = if (editorState.isSoftWrapEnabled) {
+                                Modifier.fillMaxWidth()
+                            } else {
+                                Modifier.defaultMinSize(minWidth = 1000.dp)
+                            }
+
                             BasicTextField(
                                 value = editorState.textFieldValue,
                                 onValueChange = { editorState.updateText(it) },
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = textFieldModifier,
                                 textStyle = editorTextStyle.copy(color = MaterialTheme.colorScheme.onSurface),
                                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                                visualTransformation = visualTransformation
+                                visualTransformation = visualTransformation,
+                                onTextLayout = { result ->
+                                    textLayoutResult = result
+                                }
                             )
                         }
                     }
@@ -341,4 +418,3 @@ class MacroEditorScreen(private val macroId: String? = null) : Screen {
         }
     }
 }
-

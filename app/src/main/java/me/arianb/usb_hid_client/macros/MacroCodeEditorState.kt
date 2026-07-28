@@ -6,16 +6,40 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import me.arianb.usb_hid_client.macros.engine.Diagnostic
+import me.arianb.usb_hid_client.macros.engine.Lexer
+import me.arianb.usb_hid_client.macros.engine.Parser
 
 class MacroCodeEditorState(initialText: String = "") {
     var textFieldValue by mutableStateOf(TextFieldValue(initialText))
         private set
+
+    var diagnostics by mutableStateOf<List<Diagnostic>>(emptyList())
+        private set
+
+    init {
+        recomputeDiagnostics()
+    }
+
+    private fun recomputeDiagnostics() {
+        val lexer = Lexer(textFieldValue.text)
+        val tokens = lexer.tokenize()
+        val parser = Parser(tokens)
+        diagnostics = parser.parse().diagnostics
+    }
 
     private val undoStack = ArrayDeque<TextFieldValue>()
     private val redoStack = ArrayDeque<TextFieldValue>()
 
     val canUndo: Boolean get() = undoStack.isNotEmpty()
     val canRedo: Boolean get() = redoStack.isNotEmpty()
+
+    var isSoftWrapEnabled by mutableStateOf(true)
+        private set
+
+    fun toggleSoftWrap() {
+        isSoftWrapEnabled = !isSoftWrapEnabled
+    }
 
     var isSearchOpen by mutableStateOf(false)
         private set
@@ -31,17 +55,28 @@ class MacroCodeEditorState(initialText: String = "") {
         private set
 
     fun updateText(newValue: TextFieldValue, recordHistory: Boolean = true) {
-        if (recordHistory && newValue.text != textFieldValue.text) {
+        val textChanged = newValue.text != textFieldValue.text
+        if (recordHistory && textChanged) {
             undoStack.addLast(textFieldValue)
             redoStack.clear()
         }
         textFieldValue = newValue
+        if (textChanged) {
+            recomputeDiagnostics()
+        }
         updateSearchMatches()
     }
 
     fun setText(newText: String) {
         val newFieldValue = TextFieldValue(newText, selection = TextRange(newText.length))
         updateText(newFieldValue)
+    }
+
+    fun formatCurrentScript() {
+        val formatted = formatDuckyScript(textFieldValue.text)
+        if (formatted != textFieldValue.text) {
+            setText(formatted)
+        }
     }
 
     fun undo() {
@@ -123,10 +158,38 @@ class MacroCodeEditorState(initialText: String = "") {
         }
     }
 
+    fun previousMatch() {
+        if (searchMatches.isNotEmpty()) {
+            activeMatchIndex = if (activeMatchIndex - 1 < 0) searchMatches.size - 1 else activeMatchIndex - 1
+        }
+    }
+
+    fun replaceCurrentMatch() {
+        if (searchMatches.isEmpty() || activeMatchIndex !in searchMatches.indices) return
+        val match = searchMatches[activeMatchIndex]
+        val text = textFieldValue.text
+        val newText = text.substring(0, match.start) + replaceQuery + text.substring(match.end)
+        updateText(TextFieldValue(newText, selection = TextRange(match.start + replaceQuery.length)))
+    }
+
     fun replaceAllMatches() {
         if (searchQuery.isEmpty()) return
         val newText = textFieldValue.text.replace(searchQuery, replaceQuery, ignoreCase = true)
         setText(newText)
+    }
+
+    // Returns character offset in text where each physical line starts (0-indexed line array)
+    fun getPhysicalLineStartIndices(): List<Int> {
+        val text = textFieldValue.text
+        if (text.isEmpty()) return listOf(0)
+        val list = mutableListOf<Int>()
+        list.add(0)
+        for (i in text.indices) {
+            if (text[i] == '\n' && i + 1 <= text.length) {
+                list.add(i + 1)
+            }
+        }
+        return list
     }
 
     // Line and Cursor Statistics for Editor Gutter & Highlighting

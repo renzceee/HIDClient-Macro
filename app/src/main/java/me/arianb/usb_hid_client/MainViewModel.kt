@@ -13,10 +13,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.Dispatchers
 import me.arianb.usb_hid_client.hid_utils.CharacterDeviceManager
 import me.arianb.usb_hid_client.hid_utils.DevicePath
 import me.arianb.usb_hid_client.hid_utils.ModifiesStateDirectly
 import me.arianb.usb_hid_client.hid_utils.KeyCodeTranslation
+import me.arianb.usb_hid_client.macros.engine.DuckyExecutionCallbacks
+import me.arianb.usb_hid_client.macros.engine.DuckyInterpreter
+import me.arianb.usb_hid_client.macros.engine.Lexer
+import me.arianb.usb_hid_client.macros.engine.Parser
 import me.arianb.usb_hid_client.report_senders.KeySender
 import me.arianb.usb_hid_client.settings.GadgetUserPreferences
 import me.arianb.usb_hid_client.settings.Macro
@@ -336,7 +341,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun executeAutoRunSequence(enabledMacros: List<Macro>) {
         if (_isPlaying.value || _uiState.value.missingCharacterDevice || enabledMacros.isEmpty()) return
         val sorted = enabledMacros.sortedBy { it.autoRunOrder }
-        currentMacroJob = viewModelScope.launch {
+        currentMacroJob = viewModelScope.launch(Dispatchers.Default) {
             _isPlaying.value = true
             try {
                 for ((index, macro) in sorted.withIndex()) {
@@ -367,7 +372,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun executeMacro(macroId: String?, script: String) {
         if (_isPlaying.value || _uiState.value.missingCharacterDevice) return
-        currentMacroJob = viewModelScope.launch {
+        currentMacroJob = viewModelScope.launch(Dispatchers.Default) {
             _isPlaying.value = true
             _runningMacroId.value = macroId
             clearLogs()
@@ -390,263 +395,161 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun runScriptInternal(script: String) {
-        val lines = script.lines()
-        var defaultDelayMs = 0L
-        var lastAction: (suspend () -> Unit)? = null
+        val lexer = Lexer(script)
+        val tokens = lexer.tokenize()
+        val parser = Parser(tokens)
+        val parseResult = parser.parse()
 
-        fun normalizeToken(t: String): String = when (t.lowercase()) {
-            "windows", "win", "gui", "meta", "cmd", "super" -> "win"
-            "control", "ctrl" -> "ctrl"
-            "escape", "esc" -> "esc"
-            "enter", "return" -> "enter"
-            "tab" -> "tab"
-            "space", "spacebar" -> "space"
-            "backspace", "bksp" -> "backspace"
-            "delete", "del" -> "delete"
-            "up" -> "up"
-            "down" -> "down"
-            "left" -> "left"
-            "right" -> "right"
-            "pageup", "pgup" -> "pageup"
-            "pagedown", "pgdn" -> "pagedown"
-            "home" -> "home"
-            "end" -> "end"
-            else -> t.lowercase()
+        for (diag in parseResult.diagnostics) {
+            if (diag.isError) {
+                appendLog("[ERROR L${diag.line}:${diag.column}] ${diag.message}", MacroLogType.ERROR)
+            } else {
+                appendLog("[WARN L${diag.line}:${diag.column}] ${diag.message}", MacroLogType.INFO)
+            }
         }
 
-        suspend fun runActionAndMaybeDelay(action: suspend () -> Unit) {
-            if (!kotlinx.coroutines.currentCoroutineContext().isActive) return
-            action()
-            if (defaultDelayMs > 0 && kotlinx.coroutines.currentCoroutineContext().isActive) delay(defaultDelayMs)
+        if (parseResult.diagnostics.any { it.isError }) {
+            appendLog("Aborting macro execution due to syntax errors.", MacroLogType.ERROR)
+            return
         }
 
-        for (rawLine in lines) {
-            if (!kotlinx.coroutines.currentCoroutineContext().isActive) {
-                appendLog("Execution stopped by user", MacroLogType.ERROR)
-                break
-            }
-            val line = rawLine.trim()
-            if (line.isEmpty()) continue
-            if (line.startsWith("REM", ignoreCase = true)) {
-                appendLog("Comment: $line", MacroLogType.INFO)
-                continue
+        val callbacks = object : DuckyExecutionCallbacks {
+            override suspend fun sendText(text: String) {
+                this@MainViewModel.sendText(text)
             }
 
-            val parts = line.split("\u0020+".toRegex(), limit = 2)
-            val cmd = parts[0].uppercase()
-            val arg = if (parts.size > 1) parts[1] else ""
-
-            when (cmd) {
-                "DEFAULT_DELAY", "DEFAULTDELAY" -> {
-                    defaultDelayMs = arg.trim().toLongOrNull() ?: defaultDelayMs
-                    appendLog("Set DEFAULT_DELAY ${defaultDelayMs}ms", MacroLogType.COMMAND)
-                }
-                "DELAY" -> {
-                    val ms = arg.trim().toLongOrNull() ?: 0L
-                    if (ms > 0) {
-                        appendLog("Delaying ${ms}ms...", MacroLogType.DELAY)
-                        delay(ms)
-                    }
-                }
-                "STRING" -> {
-                    appendLog("Typing string: \"$arg\"", MacroLogType.TYPING)
-                    val action: suspend () -> Unit = { sendText(arg) }
-                    lastAction = action
-                    runActionAndMaybeDelay(action)
-                }
-                "ENTER" -> {
-                    appendLog("Key press: ENTER", MacroLogType.COMMAND)
-                    val action: suspend () -> Unit = { sendChord(listOf("enter")) }
-                    lastAction = action
-                    runActionAndMaybeDelay(action)
-                }
-                "TAB" -> {
-                    appendLog("Key press: TAB", MacroLogType.COMMAND)
-                    val action: suspend () -> Unit = { sendChord(listOf("tab")) }
-                    lastAction = action
-                    runActionAndMaybeDelay(action)
-                }
-                "ESC", "ESCAPE" -> {
-                    appendLog("Key press: ESC", MacroLogType.COMMAND)
-                    val action: suspend () -> Unit = { sendChord(listOf("esc")) }
-                    lastAction = action
-                    runActionAndMaybeDelay(action)
-                }
-                "SPACE" -> {
-                    appendLog("Key press: SPACE", MacroLogType.COMMAND)
-                    val action: suspend () -> Unit = { sendChord(listOf("space")) }
-                    lastAction = action
-                    runActionAndMaybeDelay(action)
-                }
-                "BACKSPACE", "BKSP" -> {
-                    appendLog("Key press: BACKSPACE", MacroLogType.COMMAND)
-                    val action: suspend () -> Unit = { sendChord(listOf("backspace")) }
-                    lastAction = action
-                    runActionAndMaybeDelay(action)
-                }
-                "DELETE", "DEL" -> {
-                    appendLog("Key press: DELETE", MacroLogType.COMMAND)
-                    val action: suspend () -> Unit = { sendChord(listOf("delete")) }
-                    lastAction = action
-                    runActionAndMaybeDelay(action)
-                }
-                "LEFT" -> {
-                    appendLog("Key press: LEFT", MacroLogType.COMMAND)
-                    val action: suspend () -> Unit = { sendChord(listOf("left")) }
-                    lastAction = action
-                    runActionAndMaybeDelay(action)
-                }
-                "RIGHT" -> {
-                    appendLog("Key press: RIGHT", MacroLogType.COMMAND)
-                    val action: suspend () -> Unit = { sendChord(listOf("right")) }
-                    lastAction = action
-                    runActionAndMaybeDelay(action)
-                }
-                "UP" -> {
-                    appendLog("Key press: UP", MacroLogType.COMMAND)
-                    val action: suspend () -> Unit = { sendChord(listOf("up")) }
-                    lastAction = action
-                    runActionAndMaybeDelay(action)
-                }
-                "DOWN" -> {
-                    appendLog("Key press: DOWN", MacroLogType.COMMAND)
-                    val action: suspend () -> Unit = { sendChord(listOf("down")) }
-                    lastAction = action
-                    runActionAndMaybeDelay(action)
-                }
-                "HOME" -> {
-                    appendLog("Key press: HOME", MacroLogType.COMMAND)
-                    val action: suspend () -> Unit = { sendChord(listOf("home")) }
-                    lastAction = action
-                    runActionAndMaybeDelay(action)
-                }
-                "END" -> {
-                    appendLog("Key press: END", MacroLogType.COMMAND)
-                    val action: suspend () -> Unit = { sendChord(listOf("end")) }
-                    lastAction = action
-                    runActionAndMaybeDelay(action)
-                }
-                "PAGEUP", "PGUP" -> {
-                    appendLog("Key press: PAGEUP", MacroLogType.COMMAND)
-                    val action: suspend () -> Unit = { sendChord(listOf("pageup")) }
-                    lastAction = action
-                    runActionAndMaybeDelay(action)
-                }
-                "PAGEDOWN", "PGDN" -> {
-                    appendLog("Key press: PAGEDOWN", MacroLogType.COMMAND)
-                    val action: suspend () -> Unit = { sendChord(listOf("pagedown")) }
-                    lastAction = action
-                    runActionAndMaybeDelay(action)
-                }
-                "REPEAT" -> {
-                    val times = arg.trim().toIntOrNull() ?: 0
-                    appendLog("REPEAT last command ($times times)", MacroLogType.COMMAND)
-                    repeat(times) {
-                        if (!kotlinx.coroutines.currentCoroutineContext().isActive) return@repeat
-                        val a = lastAction
-                        if (a != null) runActionAndMaybeDelay(a)
-                    }
-                }
-                "GUI", "WINDOWS", "WIN", "CMD", "META", "SUPER",
-                "CTRL", "CONTROL", "ALT", "SHIFT" -> {
-                    val words = line.split("\u0020+".toRegex()).map { normalizeToken(it) }
-                    val tokens = words
-                    appendLog("Key chord: ${tokens.joinToString(" + ")}", MacroLogType.COMMAND)
-                    val action: suspend () -> Unit = { sendChord(tokens) }
-                    lastAction = action
-                    runActionAndMaybeDelay(action)
-                }
-                else -> {
-                    val words = line.split("\u0020+".toRegex()).map { normalizeToken(it) }
-                    val maybeHasModifier = words.any { it in listOf("ctrl", "alt", "shift", "win") }
-                    if (maybeHasModifier) {
-                        appendLog("Key chord: ${words.joinToString(" + ")}", MacroLogType.COMMAND)
-                        val action: suspend () -> Unit = { sendChord(words) }
-                        lastAction = action
-                        runActionAndMaybeDelay(action)
-                    } else {
-                        val single = words.singleOrNull()
-                        val isFunctionKey = single?.matches(Regex("f(1[0-2]|[1-9])", RegexOption.IGNORE_CASE)) == true
-                        val knownKeys = setOf(
-                            "enter","esc","tab","space","backspace","delete",
-                            "up","down","left","right","home","end","pageup","pagedown",
-                            "capslock","printscreen"
-                        )
-                        if (single != null && (single in knownKeys || isFunctionKey)) {
-                            appendLog("Key press: ${single.uppercase()}", MacroLogType.COMMAND)
-                            val action: suspend () -> Unit = { sendChord(listOf(single)) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        } else {
-                            appendLog("Typing text: \"$line\"", MacroLogType.TYPING)
-                            val action: suspend () -> Unit = { sendText(line) }
-                            lastAction = action
-                            runActionAndMaybeDelay(action)
-                        }
-                    }
-                }
+            override suspend fun sendChord(keys: List<String>) {
+                this@MainViewModel.sendChord(keys)
             }
+
+            override suspend fun holdKeys(keys: List<String>) {
+                this@MainViewModel.holdKeys(keys)
+            }
+
+            override suspend fun releaseKeys(keys: List<String>) {
+                this@MainViewModel.releaseKeys(keys)
+            }
+
+            override fun logInfo(message: String) {
+                appendLog(message, MacroLogType.INFO)
+            }
+
+            override fun logCommand(message: String) {
+                appendLog(message, MacroLogType.COMMAND)
+            }
+
+            override fun logTyping(message: String) {
+                appendLog(message, MacroLogType.TYPING)
+            }
+
+            override fun logDelay(message: String) {
+                appendLog(message, MacroLogType.DELAY)
+            }
+
+            override fun logWarning(message: String) {
+                appendLog(message, MacroLogType.INFO)
+            }
+
+            override fun logError(message: String) {
+                appendLog(message, MacroLogType.ERROR)
+            }
+        }
+
+        try {
+            val interpreter = DuckyInterpreter(callbacks)
+            interpreter.execute(parseResult.statements)
+        } finally {
+            releaseKeys(emptyList())
         }
     }
 
     fun stopMacro() {
         currentMacroJob?.cancel()
+        releaseKeys(emptyList())
+    }
+
+    private var heldModifier: Byte = 0
+
+    private fun holdKeys(keys: List<String>) {
+        for (k in keys) {
+            val bit = modBit(k)
+            if (bit.toInt() != 0) {
+                heldModifier = (heldModifier.toInt() or bit.toInt()).toByte()
+            }
+        }
+        sendChord(keys)
+    }
+
+    private fun releaseKeys(keys: List<String>) {
+        if (keys.isEmpty()) {
+            heldModifier = 0
+        } else {
+            for (k in keys) {
+                val bit = modBit(k)
+                if (bit.toInt() != 0) {
+                    heldModifier = (heldModifier.toInt() and bit.toInt().inv()).toByte()
+                }
+            }
+        }
+        addStandardKey(heldModifier, 0x00)
+    }
+
+    private fun modBit(token: String): Byte = when (token.lowercase()) {
+        "ctrl", "control" -> 0x01
+        "shift" -> 0x02
+        "alt" -> 0x04
+        "gui", "windows", "win", "meta", "cmd", "super" -> 0x08
+        "rctrl" -> 0x10
+        "rshift" -> 0x20
+        "ralt" -> 0x40
+        "rgui", "rwindows", "rwin", "rmeta", "rcmd", "rsuper" -> 0x80.toByte()
+        else -> 0
+    }
+
+    private fun keyCode(token: String): Byte? = when (token.lowercase()) {
+        "enter", "return" -> 0x28
+        "esc", "escape" -> 0x29
+        "tab" -> 0x2B
+        "space", "spacebar" -> 0x2C
+        "backspace", "bksp" -> 0x2A
+        "delete", "del" -> 0x4C
+        "up", "uparrow" -> 0x52
+        "down", "downarrow" -> 0x51
+        "left", "leftarrow" -> 0x50
+        "right", "rightarrow" -> 0x4F
+        "home" -> 0x4A
+        "end" -> 0x4D
+        "pageup", "pgup" -> 0x4B
+        "pagedown", "pgdn" -> 0x4E
+        "capslock" -> 0x39
+        "printscreen" -> 0x46
+        "insert" -> 0x49
+        "pause", "break" -> 0x48
+        "menu", "app" -> 0x65.toByte()
+        "f1" -> 0x3A
+        "f2" -> 0x3B
+        "f3" -> 0x3C
+        "f4" -> 0x3D
+        "f5" -> 0x3E
+        "f6" -> 0x3F
+        "f7" -> 0x40
+        "f8" -> 0x41
+        "f9" -> 0x42
+        "f10" -> 0x43
+        "f11" -> 0x44
+        "f12" -> 0x45
+        else -> {
+            if (token.length == 1) {
+                val ch = token[0]
+                val pair = KeyCodeTranslation.keyCharToScanCodes(ch)
+                pair?.second
+            } else null
+        }
     }
 
     private fun sendChord(tokens: List<String>) {
-        // Map tokens to modifier bits or key codes
-        var modifier: Byte = 0
+        var modifier: Byte = heldModifier
         val keys = mutableListOf<Byte>()
-
-        fun modBit(token: String): Byte = when (token) {
-            "ctrl", "control" -> 0x01
-            "shift" -> 0x02
-            "alt" -> 0x04
-            "win", "meta", "cmd", "super" -> 0x08
-            "rctrl" -> 0x10
-            "rshift" -> 0x20
-            "ralt" -> 0x40
-            "rmeta", "rcmd", "rwin" -> 0x80.toByte()
-            else -> 0
-        }
-
-        fun keyCode(token: String): Byte? = when (token) {
-            "enter" -> 0x28
-            "esc", "escape" -> 0x29
-            "tab" -> 0x2B
-            "space" -> 0x2C
-            "backspace" -> 0x2A
-            "delete" -> 0x4C
-            "up" -> 0x52
-            "down" -> 0x51
-            "left" -> 0x50
-            "right" -> 0x4F
-            "home" -> 0x4A
-            "end" -> 0x4D
-            "pageup" -> 0x4B
-            "pagedown" -> 0x4E
-            "capslock" -> 0x39
-            "printscreen" -> 0x46
-            "f1" -> 0x3A
-            "f2" -> 0x3B
-            "f3" -> 0x3C
-            "f4" -> 0x3D
-            "f5" -> 0x3E
-            "f6" -> 0x3F
-            "f7" -> 0x40
-            "f8" -> 0x41
-            "f9" -> 0x42
-            "f10" -> 0x43
-            "f11" -> 0x44
-            "f12" -> 0x45
-            else -> {
-                if (token.length == 1) {
-                    val ch = token[0]
-                    val pair = KeyCodeTranslation.keyCharToScanCodes(ch)
-                    pair?.second
-                } else null
-            }
-        }
 
         for (t in tokens) {
             val bit = modBit(t)
@@ -669,7 +572,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun sendText(text: String) {
         for (c in text) {
             val scanCodes = KeyCodeTranslation.keyCharToScanCodes(c) ?: continue
-            addStandardKey(scanCodes.first, scanCodes.second)
+            val mod = (scanCodes.first.toInt() or heldModifier.toInt()).toByte()
+            addStandardKey(mod, scanCodes.second)
         }
     }
 }

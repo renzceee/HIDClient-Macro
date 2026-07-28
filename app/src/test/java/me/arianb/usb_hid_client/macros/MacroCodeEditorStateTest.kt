@@ -48,20 +48,49 @@ class MacroCodeEditorStateTest {
     }
 
     @Test
+    fun testPreviousMatchAndReplaceCurrent() {
+        val state = MacroCodeEditorState("DELAY 100\nSTRING foo\nDELAY 200")
+        state.toggleSearch()
+        state.updateSearchQuery("DELAY")
+
+        assertEquals(0, state.activeMatchIndex)
+        state.previousMatch()
+        assertEquals(1, state.activeMatchIndex)
+
+        state.updateReplaceQuery("SLEEP")
+        state.replaceCurrentMatch()
+        assertEquals("DELAY 100\nSTRING foo\nSLEEP 200", state.textFieldValue.text)
+    }
+
+    @Test
+    fun testSoftWrapToggle() {
+        val state = MacroCodeEditorState("STRING Long Line")
+        assertTrue(state.isSoftWrapEnabled)
+
+        state.toggleSoftWrap()
+        assertFalse(state.isSoftWrapEnabled)
+
+        state.toggleSoftWrap()
+        assertTrue(state.isSoftWrapEnabled)
+    }
+
+    @Test
+    fun testPhysicalLineStartIndices() {
+        val script = "LINE 1\nLINE 2\nLINE 3"
+        val state = MacroCodeEditorState(script)
+
+        val starts = state.getPhysicalLineStartIndices()
+        assertEquals(listOf(0, 7, 14), starts)
+        assertEquals(3, state.getTotalLines())
+        assertEquals(script.length, state.getTotalCharacters())
+    }
+
+    @Test
     fun testFormatScript() {
         val raw = "string notepad\ndelay 100\n  rem test comment\ngui r"
         val formatted = MacroCodeEditorState.formatDuckyScript(raw)
 
         val expected = "STRING notepad\nDELAY 100\n  REM test comment\nGUI r"
         assertEquals(expected, formatted)
-    }
-
-    @Test
-    fun testLineAndColumnCalculation() {
-        val script = "LINE 1\nLINE 2\nLINE 3"
-        val state = MacroCodeEditorState(script)
-
-        assertEquals(3, state.getTotalLines())
-        assertEquals(script.length, state.getTotalCharacters())
     }
 }
