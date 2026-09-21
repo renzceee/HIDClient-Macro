@@ -17,8 +17,8 @@ android {
         ndkVersion = "26.1.10909125"
 
         // App Versioning
-        versionCode = 301
-        versionName = "v3.0.1"
+        versionCode = project.findProperty("appVersionCode")?.toString()?.toIntOrNull() ?: 302
+        versionName = (project.findProperty("appVersionName") as? String) ?: "v3.0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
