@@ -122,6 +122,10 @@ fun MainPage(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
+    LaunchedEffect(Unit) {
+        mainViewModel.refreshStatus()
+    }
+
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -195,21 +199,51 @@ fun MainPage(
     ) {
         if (selectedTab == 0) {
             // KernelSU Hero Status Card
-            val isWorking = !rootState.missingRootPrivileges && !uiState.missingCharacterDevice && uiState.isCharacterDevicePermissionsBroken == null
-            KsuStatusCard(
-                title = "USB HID Client",
-                statusText = if (isWorking) "ACTIVE" else "ERROR",
-                detailText = if (rootState.missingRootPrivileges) {
-                    "Root access missing or denied"
-                } else if (uiState.missingCharacterDevice) {
-                    "Character devices disabled in Settings"
-                } else if (uiState.isCharacterDevicePermissionsBroken != null) {
-                    "Character device permission issue: ${uiState.isCharacterDevicePermissionsBroken}"
+            val isChecking = rootState.isChecking && !rootState.hasCheckedRoot
+            val hasRoot = rootState.hasCheckedRoot && !rootState.missingRootPrivileges
+            val isWorking = hasRoot && !uiState.missingCharacterDevice && uiState.isCharacterDevicePermissionsBroken == null
+
+            val statusText = when {
+                isChecking -> "CHECKING"
+                rootState.missingRootPrivileges -> "NO ROOT"
+                uiState.missingCharacterDevice -> "CONFIG ERROR"
+                uiState.isCharacterDevicePermissionsBroken != null -> "PERM ERROR"
+                isWorking -> "ACTIVE"
+                else -> "ERROR"
+            }
+
+            val detailText = when {
+                isChecking -> "Detecting root permissions..."
+                rootState.missingRootPrivileges -> "Root access missing or denied"
+                uiState.missingCharacterDevice -> "Character devices disabled in Settings"
+                uiState.isCharacterDevicePermissionsBroken != null -> "Character device permission issue: ${uiState.isCharacterDevicePermissionsBroken}"
+                isWorking -> if (rootState.rootMethod != me.arianb.usb_hid_client.shell_utils.RootMethod.UNKNOWN) {
+                    "HID Kernel gadget mode active (${rootState.rootMethod.name})"
                 } else {
                     "HID Kernel gadget mode active"
-                },
+                }
+                else -> "Device configuration error"
+            }
+
+            KsuStatusCard(
+                title = "USB HID Client",
+                statusText = statusText,
+                detailText = detailText,
                 isWorking = isWorking,
-                modifier = Modifier.padding(bottom = 12.dp)
+                modifier = Modifier.padding(bottom = 12.dp),
+                actionButton = if (rootState.missingRootPrivileges) {
+                    {
+                        Button(
+                            onClick = { mainViewModel.refreshStatus() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError
+                            )
+                        ) {
+                            Text("Request Root")
+                        }
+                    }
+                } else null
             )
 
             DirectInput()

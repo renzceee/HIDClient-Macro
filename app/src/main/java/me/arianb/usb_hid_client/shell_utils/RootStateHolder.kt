@@ -14,7 +14,10 @@ enum class RootMethod {
 }
 
 data class RootState(
+    val isChecking: Boolean = true,
+    val hasCheckedRoot: Boolean = false,
     val missingRootPrivileges: Boolean = false,
+    val rootMethod: RootMethod = RootMethod.UNKNOWN,
 )
 
 class RootStateHolder private constructor() {
@@ -41,10 +44,52 @@ class RootStateHolder private constructor() {
             return sepolicyMap[rootMethod]
         }
 
-    fun hasRootPermissions(): Boolean {
-        val hasRootPermissions = Shell.getShell().isRoot
+    suspend fun checkRootAsync(): Boolean = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        _uiState.update { it.copy(isChecking = true) }
+        val hasRoot = try {
+            Shell.getShell().isRoot
+        } catch (e: Exception) {
+            Timber.e(e, "Exception while checking root shell")
+            false
+        }
+        val method = if (hasRoot) {
+            detectRootMethodInternal()
+        } else {
+            RootMethod.UNROOTED
+        }
+        _uiState.update {
+            it.copy(
+                isChecking = false,
+                hasCheckedRoot = true,
+                missingRootPrivileges = !hasRoot,
+                rootMethod = method
+            )
+        }
+        hasRoot
+    }
 
-        _uiState.update { it.copy(missingRootPrivileges = !hasRootPermissions) }
+    fun hasRootPermissions(): Boolean {
+        val hasRootPermissions = try {
+            Shell.getShell().isRoot
+        } catch (e: Exception) {
+            Timber.e(e, "Exception while checking root shell")
+            false
+        }
+
+        val method = if (hasRootPermissions) {
+            detectRootMethodInternal()
+        } else {
+            RootMethod.UNROOTED
+        }
+
+        _uiState.update {
+            it.copy(
+                isChecking = false,
+                hasCheckedRoot = true,
+                missingRootPrivileges = !hasRootPermissions,
+                rootMethod = method
+            )
+        }
 
         return hasRootPermissions
     }
@@ -55,6 +100,10 @@ class RootStateHolder private constructor() {
             return RootMethod.UNROOTED
         }
 
+        return detectRootMethodInternal()
+    }
+
+    private fun detectRootMethodInternal(): RootMethod {
         for ((binary, matchingRootMethod) in rootBinaryMap) {
             //Timber.d("checking for binary: %s", binary);
             val commandResult = Shell.cmd("type $binary").exec()

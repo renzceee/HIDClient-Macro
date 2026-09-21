@@ -115,11 +115,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var hasAutoRunExecutedForCurrentConnection = true
     private var isUsbConnectedState = false
 
+    fun refreshStatus() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val hasRoot = rootStateHolder.checkRootAsync()
+            if (hasRoot) {
+                anyCharacterDeviceMissing()
+            }
+        }
+    }
+
     fun setAppForegroundState(isForeground: Boolean) {
         _isAppInForeground.value = isForeground
         if (!isForeground) {
             stopMacro()
         } else {
+            refreshStatus()
             checkAndTriggerAutoRunOnConnect()
         }
     }
@@ -170,6 +180,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
+        refreshStatus()
+
         val filter = IntentFilter().apply {
             addAction("android.hardware.usb.action.USB_STATE")
             addAction(Intent.ACTION_POWER_CONNECTED)
