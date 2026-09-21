@@ -77,7 +77,7 @@ jobs:
 
       - name: Build APKs and Bundle
         run: |
-          ./gradlew assembleRelease assembleDebug bundleRelease -x lint -x test --stacktrace
+          ./gradlew assembleRelease assembleDebug bundleRelease -x lint -x test --stacktrace -Dorg.gradle.java.home="$JAVA_HOME"
 
       - name: Prepare and Sign Release Assets
         id: package_assets
