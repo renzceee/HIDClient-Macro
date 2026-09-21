@@ -1,0 +1,181 @@
+name: Build and Publish Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag (e.g. v3.0.2). If empty, version in app/build.gradle.kts is used."
+        required: false
+        type: string
+      release_name:
+        description: "Release title (e.g. HIDClient-Macro v3.0.2). Defaults to 'HIDClient-Macro <tag>'."
+        required: false
+        type: string
+      draft:
+        description: "Create draft release"
+        required: false
+        type: boolean
+        default: false
+      prerelease:
+        description: "Create pre-release"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build & Publish Release
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Determine Version and Tag
+        id: versioning
+        run: |
+          # Extract versionName from app/build.gradle.kts
+          DETECTED_VERSION=$(grep -E 'versionName\s*=\s*' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/' | head -n 1)
+          if [ -z "$DETECTED_VERSION" ]; then
+            DETECTED_VERSION="v3.0.1"
+          fi
+          
+          # Determine release tag
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag_name }}" ]; then
+            RELEASE_TAG="${{ inputs.tag_name }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            RELEASE_TAG="${GITHUB_REF#refs/tags/}"
+          else
+            RELEASE_TAG="$DETECTED_VERSION"
+          fi
+
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+          echo "DETECTED_VERSION=$DETECTED_VERSION" >> "$GITHUB_ENV"
+          echo "Using release tag: $RELEASE_TAG"
+
+      - name: Build APKs and Bundle
+        run: |
+          ./gradlew assembleRelease assembleDebug bundleRelease -x lint -x test --stacktrace
+
+      - name: Prepare and Sign Release Assets
+        id: package_assets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          mkdir -p release-assets
+          VERSION_CLEAN=$(echo "$RELEASE_TAG" | sed 's/^v//')
+
+          # Find Android SDK build-tools
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)
+          ZIPALIGN=$(find "$ANDROID_HOME/build-tools" -name zipalign -type f | sort -V | tail -n 1)
+          echo "Using apksigner: $APKSIGNER"
+          echo "Using zipalign: $ZIPALIGN"
+
+          UNSIGNED_APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+          SIGNED_APK_DEST="release-assets/HIDClient-Macro-${RELEASE_TAG}.apk"
+
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_PASSWORD" ]; then
+            echo "Signing release APK with configured repository keystore secret..."
+            echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
+
+            $ZIPALIGN -f -p 4 "$UNSIGNED_APK" release-aligned.apk || cp "$UNSIGNED_APK" release-aligned.apk
+            $APKSIGNER sign --ks release.keystore \
+              --ks-key-alias "$KEY_ALIAS" \
+              --ks-pass "pass:$KEYSTORE_PASSWORD" \
+              --key-pass "pass:$KEY_PASSWORD" \
+              --out "$SIGNED_APK_DEST" release-aligned.apk
+
+            rm -f release.keystore release-aligned.apk
+          else
+            echo "::warning ::No production signing secrets found. Generating temporary signing key to produce an installable release APK."
+            keytool -genkeypair -v \
+              -keystore temp.keystore \
+              -alias hidmacro \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass android \
+              -keypass android \
+              -dname "CN=HIDClient-Macro, OU=Macro, O=OpenSource, L=Global, S=Global, C=US"
+
+            $ZIPALIGN -f -p 4 "$UNSIGNED_APK" release-aligned.apk || cp "$UNSIGNED_APK" release-aligned.apk
+            $APKSIGNER sign --ks temp.keystore \
+              --ks-key-alias hidmacro \
+              --ks-pass pass:android \
+              --key-pass pass:android \
+              --out "$SIGNED_APK_DEST" release-aligned.apk
+
+            rm -f temp.keystore release-aligned.apk
+          fi
+
+          # Copy debug APK
+          if [ -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
+            cp "app/build/outputs/apk/debug/app-debug.apk" "release-assets/HIDClient-Macro-${RELEASE_TAG}-debug.apk"
+          fi
+
+          # Copy unsigned APK for reference
+          if [ -f "$UNSIGNED_APK" ]; then
+            cp "$UNSIGNED_APK" "release-assets/HIDClient-Macro-${RELEASE_TAG}-unsigned.apk"
+          fi
+
+          # Copy release bundle (AAB) if generated
+          if [ -f "app/build/outputs/bundle/release/app-release.aab" ]; then
+            cp "app/build/outputs/bundle/release/app-release.aab" "release-assets/HIDClient-Macro-${RELEASE_TAG}.aab"
+          fi
+
+          # Copy ProGuard/R8 mapping file if exists
+          if [ -f "app/build/outputs/mapping/release/mapping.txt" ]; then
+            cp "app/build/outputs/mapping/release/mapping.txt" "release-assets/mapping.txt"
+          fi
+
+          # Generate SHA256 checksums
+          cd release-assets
+          sha256sum * > checksums.txt 2>/dev/null || shasum -a 256 * > checksums.txt
+          cd ..
+
+          echo "Release assets prepared:"
+          ls -la release-assets
+
+      - name: Upload Artifacts to Workflow Run
+        uses: actions/upload-artifact@v4
+        with:
+          name: HIDClient-Macro-${{ env.RELEASE_TAG }}
+          path: release-assets/*
+          retention-days: 30
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ inputs.release_name || format('HIDClient-Macro {0}', env.RELEASE_TAG) }}
+          draft: ${{ inputs.draft || false }}
+          prerelease: ${{ inputs.prerelease || false }}
+          generate_release_notes: true
+          files: release-assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

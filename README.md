@@ -47,6 +47,30 @@ The app augments Android’s default USB gadget to expose HID functions and prov
 
 - Download the latest APK from the repository’s Releases page and install it on your device.
 
+### Building & Publishing Releases
+
+Automated releases are built and published using GitHub Actions ([`.github/workflows/release.yml`](.github/workflows/release.yml)).
+
+#### Triggering a Release Build
+
+- **By pushing a Git tag**:
+  ```sh
+  git tag v3.0.2
+  git push origin v3.0.2
+  ```
+- **From GitHub Actions UI**:
+  Navigate to **Actions** → **Build and Publish Release** → click **Run workflow**. You can optionally specify a tag name, custom release title, draft, or pre-release flags.
+
+#### Production Signing Secrets (Optional)
+
+To sign release APKs with your production Android keystore, add the following repository secrets under **Settings → Secrets and variables → Actions**:
+- `KEYSTORE_BASE64`: Base64-encoded string of your keystore file (`base64 -w 0 your-keystore.jks`)
+- `KEYSTORE_PASSWORD`: Keystore password
+- `KEY_ALIAS`: Keystore alias name
+- `KEY_PASSWORD`: Key password
+
+> **Note**: If signing secrets are not provided, the release workflow automatically signs the APK with a fallback key and provides the pre-signed debug APK, ensuring release assets are always immediately installable.
+
 
 ## Usage
 
